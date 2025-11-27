@@ -21,5 +21,6 @@ langchain>=0.0.350
 langchain-openai>=0.0.2
 
 # Development and linting
+pre-commit>=3.0.0
 flake8>=6.1.0
 pylint>=3.0.0
