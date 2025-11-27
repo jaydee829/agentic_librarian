@@ -1,0 +1,29 @@
+# Core ML and Data Science packages
+mlflow>=3.0,<4.0
+pandas>=2.1.0
+scikit-learn>=1.3.0
+
+# Data versioning
+dvc
+
+# PyTorch
+torch>=2.1.0
+torchvision>=0.16.0
+
+# API and Web packages
+requests>=2.31.0
+google-api-python-client>=2.111.0
+firecrawl-py>=0.0.16
+
+# Audio/Book packages
+audible>=0.8.2
+
+# LLM packages
+openai>=1.3.0
+langchain>=0.0.350
+langchain-openai>=0.0.2
+
+# Development and linting
+pre-commit>=3.0.0
+flake8>=6.1.0
+pylint>=3.0.0
