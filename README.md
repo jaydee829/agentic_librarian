@@ -35,5 +35,5 @@ To run linting locally:
 ```bash
 pip install flake8 pylint
 flake8 .
-pylint **/*.py
+find . -name '*.py' -not -path "./.git/*" -exec pylint {} +
 ```

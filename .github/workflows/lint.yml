@@ -9,6 +9,8 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -32,4 +34,4 @@ jobs:
       - name: Run pylint
         run: |
           # Find all Python files and run pylint
-          find . -name "*.py" -not -path "./.git/*" | head -100 | xargs -r pylint --exit-zero --disable=C0114,C0115,C0116 --max-line-length=120
+          find . -name "*.py" -not -path "./.git/*" -exec pylint --exit-zero --disable=C0114,C0115,C0116 --max-line-length=120 {} + || true
