@@ -1,0 +1,19 @@
+[MAIN]
+max-line-length = 120
+disable =
+    C0114,  # missing-module-docstring
+    C0115,  # missing-class-docstring
+    C0116,  # missing-function-docstring
+
+[MESSAGES CONTROL]
+confidence = HIGH
+
+[FORMAT]
+max-line-length = 120
+
+[DESIGN]
+max-args = 10
+max-locals = 15
+max-returns = 6
+max-branches = 12
+max-statements = 50
