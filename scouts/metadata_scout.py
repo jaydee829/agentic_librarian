@@ -1,6 +1,20 @@
 """Grab additional metadata to flesh out reading list"""
 
+import json
 import requests
+import os
+from bs4 import BeautifulSoup
+from googleapiclient.discovery import build
+from google import genai
+from typing import Optional
+
+# Load environment variables from .env if present (for local dev)
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def fetch_book_metadata(title: str, author: str, api_key: str = None) -> dict:
@@ -42,8 +56,12 @@ def fetch_book_metadata(title: str, author: str, api_key: str = None) -> dict:
         # Extract the first result
         book = data["items"][0]["volumeInfo"]
 
+        if "ISBN_13" in book.get("industryIdentifiers", [{}])[0].get("type", ""):
+            isbn_13 = book["industryIdentifiers"][0]["identifier"]
+
         return {
             "google_id": data["items"][0]["id"],
+            "ISBN_13": isbn_13 if "isbn_13" in locals() else "",
             "title": book.get("title"),
             "authors": book.get("authors", []),
             "published_date": book.get("publishedDate"),
@@ -57,3 +75,85 @@ def fetch_book_metadata(title: str, author: str, api_key: str = None) -> dict:
     except requests.exceptions.RequestException as e:
         print(f"API Request failed: {e}")
         return None
+
+
+# Audible package requires authentication, no open API available
+# iTunes API is limited and often returns incomplete data
+# scraping HTML tags is fragile, so I will use an LLM-powered approach
+
+
+class AudiobookScout:
+    """Scouts audiobook metadata from Audible using LLM extraction."""
+
+    def __init__(self):
+        self._API_KEY = os.environ.get("GOOGLE_SEARCH_API_KEY")
+        if not self._API_KEY:
+            raise ValueError(
+                "Google Search API key not set. Please set the GOOGLE_SEARCH_API_KEY environment variable."
+            )
+        self._client = genai.Client(api_key=self._API_KEY)
+
+    def search_audible_link(self, title: str) -> Optional[str]:
+        """Finds the Audible URL using Google Custom Search."""
+        SEARCH_ENGINE_ID = os.environ.get("SEARCH_ENGINE_ID")
+        if not SEARCH_ENGINE_ID:
+            raise ValueError(
+                "Search Engine ID not set. Please set the SEARCH_ENGINE_ID environment variable."
+            )
+
+        service = build("customsearch", "v1", developerKey=self._API_KEY)
+        search_results = (
+            service.cse()
+            .list(q=f"site:audible.com {title} audiobook", cx=SEARCH_ENGINE_ID, num=1)
+            .execute()
+        )
+
+        if "items" in search_results and len(search_results["items"]) > 0:
+            return search_results["items"][0]["link"]
+        return None
+
+    def fetch_page_content(self, title: str) -> str:
+        """Fetches raw HTML (mimicking a browser)."""
+
+        url = self.search_audible_link(title)
+        if not url:
+            raise ValueError(f"No Audible link found for title: {title}")
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers)
+
+        # strip scripts/styles to save tokens
+        soup = BeautifulSoup(response.content, "html.parser")
+        for script in soup(["script", "style"]):
+            script.extract()
+
+        return soup.get_text()
+
+    def extract_metadata_with_gemini(self, title: str) -> dict:
+        """Uses Gemini 1.5 Flash to extract data."""
+        text_content = self.fetch_page_content(title)
+
+        # Define the JSON schema in the prompt
+        prompt = f"""
+        You are a data extraction agent. Extract the following fields from the text below.
+        Return ONLY a raw JSON object. Do not use Markdown formatting.
+
+        Fields required:
+        - title (string)
+        - narrator (string): clean name only
+        - length_minutes (int): convert "X hrs Y mins" to total minutes
+
+        Input Text:
+        {text_content[:30000]}
+        """
+
+        response = self._client.models.generate_content(
+            model="gemini-2.0-flash", contents=prompt
+        )
+
+        text = response.text.strip()
+        if text.startswith("```json"):
+            text = text.replace("```json", "").replace("```", "")
+        return json.loads(text)

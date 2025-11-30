@@ -36,7 +36,11 @@ def split_authors(df: pd.DataFrame) -> pd.DataFrame:
     if "Author" not in df.columns:
         raise ValueError("DataFrame must contain an 'Author' column")
 
-    author_splits = df["Author"].str.split(";", expand=True)
+    author_splits = (
+        df["Author"]
+        .str.split(";", expand=True)
+        .applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    )
 
     # Rename the new columns with numbers
     author_splits.columns = [f"Author_{i+1}" for i in range(author_splits.shape[1])]

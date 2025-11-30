@@ -7,6 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+
+# Create a non-root user and set up home directory
+RUN useradd --create-home appuser
+
 # Set working directory
 WORKDIR /app
 
@@ -22,8 +26,15 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+
 # Copy the rest of the application
 COPY . .
+
+# Change ownership of the app directory to the non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
 
 # Default command
 CMD ["python", "--version"]
