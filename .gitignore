@@ -73,3 +73,6 @@ coverage.xml
 
 # Pyre type checker
 .pyre/
+
+# Data files
+data/*.csv

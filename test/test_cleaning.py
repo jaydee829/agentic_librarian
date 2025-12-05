@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 
-import data.cleaning as cleaning
+import etl.cleaning as cleaning
 
 
 def test_split_formats_single_format():

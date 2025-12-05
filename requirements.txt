@@ -30,3 +30,7 @@ google-generativeai>=1.26.1
 pre-commit>=3.0.0
 flake8>=6.1.0
 pylint>=3.0.0
+
+# Orchestration
+dagster
+dagster-webserver

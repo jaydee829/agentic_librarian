@@ -14,11 +14,23 @@ RUN useradd --create-home appuser
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+
+# Install system dependencies and locales
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     git \
+    locales \
     && rm -rf /var/lib/apt/lists/*
+
+# Generate en_US.UTF-8 locale
+RUN echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen && \
+    locale-gen
+
+# Set locale environment variables
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
 
 # Copy requirements first for better caching
 COPY requirements.txt .
