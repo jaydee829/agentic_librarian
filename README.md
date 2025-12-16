@@ -19,6 +19,21 @@ docker run -it agentic-librarian
 
 ### Dependencies
 
+This project uses [uv](https://github.com/astral-sh/uv) for fast dependency management. Dependencies are defined in `pyproject.toml`.
+
+To install dependencies:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install project dependencies
+uv pip install -e .
+
+# Install development dependencies
+uv pip install -e ".[dev]"
+```
+
 The development environment includes the following packages:
 
 - **ML/Data Science**: mlflow, pandas, scikit-learn, PyTorch
@@ -28,12 +43,26 @@ The development environment includes the following packages:
 
 ### Code Quality
 
-This project uses flake8 and pylint for PEP8 style checking. Linting is automatically run on every commit and pull request via GitHub Actions.
+This project uses [ruff](https://github.com/astral-sh/ruff) for fast Python linting and formatting. Linting is automatically run on every commit and pull request via GitHub Actions.
 
 To run linting locally:
 
 ```bash
-pip install flake8 pylint
-flake8 .
-find . -name '*.py' -not -path "./.git/*" -exec pylint {} +
+# Install uv (fast Python package installer)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install ruff
+uv pip install ruff
+
+# Run linting
+ruff check .
+
+# Run formatting check
+ruff format --check .
+
+# Auto-fix issues
+ruff check --fix .
+
+# Auto-format code
+ruff format .
 ```
