@@ -1,8 +1,9 @@
+import json
+
 import requests
 from bs4 import BeautifulSoup
 from google.cloud import aiplatform
 from googleapiclient.discovery import build
-import json
 
 # --- CONFIGURATION ---
 PROJECT_ID = "your-gcp-project-id"
@@ -43,7 +44,7 @@ def fetch_page_content(url):
 
 def extract_with_gemini(text_content):
     """Uses Gemini 1.5 Flash to extract data."""
-    from vertexai.generative_models import GenerativeModel, GenerationConfig
+    from vertexai.generative_models import GenerationConfig, GenerativeModel
 
     model = GenerativeModel("gemini-1.5-flash-001")
 

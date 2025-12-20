@@ -1,12 +1,12 @@
 """Grab additional metadata to flesh out reading list"""
 
 import json
-import requests
 import os
+
+import requests
 from bs4 import BeautifulSoup
-from googleapiclient.discovery import build
 from google import genai
-from typing import Optional
+from googleapiclient.discovery import build
 
 # Load environment variables from .env if present (for local dev)
 try:
@@ -93,10 +93,10 @@ class AudiobookScout:
             )
         self._client = genai.Client(api_key=self._API_KEY)
 
-    def search_audible_link(self, title: str) -> Optional[str]:
+    def search_audible_link(self, title: str) -> str | None:
         """Finds the Audible URL using Google Custom Search."""
-        SEARCH_ENGINE_ID = os.environ.get("SEARCH_ENGINE_ID")
-        if not SEARCH_ENGINE_ID:
+        search_engine_id = os.environ.get("SEARCH_ENGINE_ID")
+        if not search_engine_id:
             raise ValueError(
                 "Search Engine ID not set. Please set the SEARCH_ENGINE_ID environment variable."
             )
@@ -104,7 +104,7 @@ class AudiobookScout:
         service = build("customsearch", "v1", developerKey=self._API_KEY)
         search_results = (
             service.cse()
-            .list(q=f"site:audible.com {title} audiobook", cx=SEARCH_ENGINE_ID, num=1)
+            .list(q=f"site:audible.com {title} audiobook", cx=search_engine_id, num=1)
             .execute()
         )
 

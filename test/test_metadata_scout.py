@@ -1,8 +1,9 @@
-import pytest
 import os
+
+import pytest
 import requests
 
-import scouts.metadata_scout as md_scout
+import agentic_librarian.scouts.metadata_scout as md_scout
 
 
 def test_fetch_book_metadata_success(monkeypatch):

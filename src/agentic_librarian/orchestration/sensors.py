@@ -1,5 +1,7 @@
 import os
-from dagster import sensor, RunRequest, SensorEvaluationContext
+
+from dagster import RunRequest, SensorEvaluationContext, sensor
+
 from orchestration.jobs import enhance_job
 
 

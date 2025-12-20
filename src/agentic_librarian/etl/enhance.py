@@ -1,10 +1,10 @@
-import pandas as pd
-import mlflow
 import etl.cleaning as cleaning
-from scouts.metadata_scout import fetch_book_metadata, AudiobookScout
+import mlflow
+import pandas as pd
 
 # import os
-from dagster import asset, AssetExecutionContext, MetadataValue
+from dagster import AssetExecutionContext, MetadataValue, asset
+from scouts.metadata_scout import AudiobookScout, fetch_book_metadata
 
 # from dvc.repo import Repo
 
@@ -18,7 +18,7 @@ def enhanced_book_features(context: AssetExecutionContext):
         context.log.error(f"File data/raw/{context.partition_key}.csv not found.")
         raise Exception(
             f"Sensor triggered but file data/raw/{context.partition_key}.csv is missing."
-        )
+        ) from None
 
     df = cleaning.split_formats(df)
     df = cleaning.split_authors(df)
