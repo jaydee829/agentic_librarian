@@ -28,6 +28,8 @@ dependencies = [
     # Orchestration
     "dagster",
     "dagster-webserver",
+    # Testing
+    "pytest"
 ]
 
 [project.optional-dependencies]
@@ -94,3 +96,11 @@ quote-style = "double"
 
 # Use Unix-style line endings
 line-ending = "lf"
+
+[tool.pytest.ini_options]
+testpaths = [
+    "test"
+]
+python_files = [
+    "test_*.py"
+]

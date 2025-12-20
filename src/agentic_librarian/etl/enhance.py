@@ -4,7 +4,7 @@ import pandas as pd
 
 # import os
 from dagster import AssetExecutionContext, MetadataValue, asset
-from scouts.metadata_scout import AudiobookScout, fetch_book_metadata
+from scouts.metadata_scout import AudiobookScout, fetch_google_books_metadata
 
 # from dvc.repo import Repo
 
@@ -40,7 +40,7 @@ def enhanced_book_features(context: AssetExecutionContext):
                     [audio_df, pd.DataFrame([metadata])], ignore_index=True
                 )  # TODO: verify schema matches, add to successes if so
             else:
-                metadata = fetch_book_metadata(row[1]["ISBN_13"])
+                metadata = fetch_google_books_metadata(row[1]["ISBN_13"])
                 for key, value in metadata.items():
                     df.at[row[0], key] = value
         audio_df = cleaning.split_narrators(audio_df)

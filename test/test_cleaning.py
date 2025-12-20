@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-import agentic_librarian.etl.cleaning as cleaning
+import src.agentic_librarian.etl.cleaning as cleaning
 
 
 def test_split_formats_single_format():

@@ -3,7 +3,7 @@ import os
 import pytest
 import requests
 
-import agentic_librarian.scouts.metadata_scout as md_scout
+import src.agentic_librarian.scouts.metadata_scout as md_scout
 
 
 def test_fetch_book_metadata_success(monkeypatch):
@@ -37,7 +37,7 @@ def test_fetch_book_metadata_success(monkeypatch):
 
     monkeypatch.setattr("requests.get", mock_get)
 
-    metadata = md_scout.fetch_book_metadata("Test Book", "Test Author")
+    metadata = md_scout.fetch_google_books_metadata("Test Book", "Test Author")
     assert metadata is not None
     assert metadata["google_id"] == "test_id"
     assert metadata["title"] == "Test Book"
@@ -65,7 +65,9 @@ def test_fetch_book_metadata_no_results(monkeypatch):
 
     monkeypatch.setattr("requests.get", mock_get)
 
-    metadata = md_scout.fetch_book_metadata("Nonexistent Book", "Unknown Author")
+    metadata = md_scout.fetch_google_books_metadata(
+        "Nonexistent Book", "Unknown Author"
+    )
     assert metadata is None
 
     def mock_get(*args, **kwargs):
@@ -73,7 +75,7 @@ def test_fetch_book_metadata_no_results(monkeypatch):
 
     monkeypatch.setattr("requests.get", mock_get)
 
-    metadata = md_scout.fetch_book_metadata("Any Book", "Any Author")
+    metadata = md_scout.fetch_google_books_metadata("Any Book", "Any Author")
     assert metadata is None
 
 
@@ -103,7 +105,9 @@ def test_fetch_book_metadata_missing_fields(monkeypatch):
 
     monkeypatch.setattr("requests.get", mock_get)
 
-    metadata = md_scout.fetch_book_metadata("Test Book Missing Fields", "Test Author")
+    metadata = md_scout.fetch_google_books_metadata(
+        "Test Book Missing Fields", "Test Author"
+    )
     assert metadata is not None
     assert metadata["google_id"] == "test_id_missing_fields"
     assert metadata["title"] == "Test Book Missing Fields"
@@ -126,7 +130,7 @@ def test_fetch_book_metadata_no_items_key(monkeypatch):
 
     monkeypatch.setattr("requests.get", mock_get)
 
-    metadata = md_scout.fetch_book_metadata("Some Book", "Some Author")
+    metadata = md_scout.fetch_google_books_metadata("Some Book", "Some Author")
     assert metadata is None
 
 
@@ -141,9 +145,9 @@ def test_fetch_book_metadata_integration_live():
     api_key = os.environ.get("GOOGLE_BOOKS_API_KEY")
 
     if api_key:
-        metadata = md_scout.fetch_book_metadata(title, author, api_key=api_key)
+        metadata = md_scout.fetch_google_books_metadata(title, author, api_key=api_key)
     else:
-        metadata = md_scout.fetch_book_metadata(title, author)
+        metadata = md_scout.fetch_google_books_metadata(title, author)
 
     assert metadata is not None, "Expected live API to return metadata"
     assert "google_id" in metadata
@@ -178,6 +182,32 @@ def test_fetch_audible_metadata_integration_live():
     # Ensure the returned metadata matches the queried book/author (case-insensitive, tolerant)
     title_ok = "hobbit" in metadata["trackName"].lower()
     author_ok = "tolkien" in metadata["artistName"].lower()
+    assert (
+        title_ok or author_ok
+    ), f"Returned metadata does not appear to match '{title}' by '{author}'"
+
+
+@pytest.mark.integration
+def test_fetch_hardcover_metadata_integration_live():
+    # Skip if explicitly disabled to avoid network calls in some CI environments
+    if os.environ.get("SKIP_INTEGRATION_TESTS") == "1":
+        pytest.skip("Skipping integration tests (SKIP_INTEGRATION_TESTS=1)")
+
+    title = "The Way of Kings"
+    author = "Brandon Sanderson"
+    api_key = os.environ.get("HARDCOVER_API_KEY")
+
+    metadata = md_scout.fetch_hardcover_metadata(title, author, api_key=api_key)
+
+    assert metadata is not None, "Expected live API to return metadata"
+    assert "id" in metadata
+    assert "title" in metadata
+    assert "moods" in metadata
+
+    # Ensure the returned metadata matches the queried book/author (case-insensitive, tolerant)
+    title_ok = "way of kings" in metadata["title"].lower()
+    authors = metadata.get("author_names") or []
+    author_ok = any("sanderson" in a.lower() for a in authors)
     assert (
         title_ok or author_ok
     ), f"Returned metadata does not appear to match '{title}' by '{author}'"

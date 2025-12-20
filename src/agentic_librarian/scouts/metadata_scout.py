@@ -17,7 +17,7 @@ except ImportError:
     pass
 
 
-def fetch_book_metadata(title: str, author: str, api_key: str = None) -> dict:
+def fetch_google_books_metadata(title: str, author: str, api_key: str = None) -> dict:
     """
     Fetches book metadata from Google Books API using Title and Author.
 
@@ -75,6 +75,76 @@ def fetch_book_metadata(title: str, author: str, api_key: str = None) -> dict:
     except requests.exceptions.RequestException as e:
         print(f"API Request failed: {e}")
         return None
+
+
+def fetch_hardcover_metadata(title: str, author: str, api_key: str = None) -> dict:
+    """Get metadata from Hardcover API
+
+    Args:
+        title (str): The book title.
+        author (str): The book author.
+        api_key (str, optional): API key for authentication. Defaults to None.
+
+    Returns:
+        dict: A dictionary containing Hardcover metadata.
+    """
+    url = "https://api.hardcover.app/v1/graphql"
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    query = """
+        query GetBooksFromTitle($title: String!) {
+            books(where: {title: {_eq: $title}}) {
+                id
+                title
+                pages
+                release_date
+                moods: cached_tags(path: "Mood")
+                genres: cached_tags(path: "Genre")
+                description
+                contributions {
+                    author {
+                        name
+                    }
+                }
+            }
+        }
+    """
+
+    variables = {"title": title}
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"query": query, "variables": variables},
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # Return the first book found
+        book = data.get("data", {}).get("books", [])[0]
+        return {  # TODO: map fields properly
+            "id": book.get("id"),
+            "title": book.get("title"),
+            "author_names": book.get("author_names", []),
+            "edition_format": book.get("edition_format"),
+            "pages": book.get("pages"),
+            "release_date": book.get("release_date"),
+            "isbn_13": book.get("isbn_13"),
+            "publisher": book.get("publisher", {}).get("name"),
+            "moods": book.get("moods", []),
+            "tags": book.get("tags", []),
+            "genres": book.get("genres", []),
+            "description": book.get("description", ""),
+        }
+    except requests.RequestException as e:
+        print(f"Hardcover API request failed: {e}")
+        return {}
 
 
 # Audible package requires authentication, no open API available
