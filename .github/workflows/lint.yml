@@ -19,20 +19,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
 
-      - name: Install ruff with uv
+      - name: Install pip and pre-commit
         run: |
-          # Install only ruff for linting (not all project dependencies)
-          uv pip install --system ruff
+          python -m pip install --upgrade pip
+          pip install pre-commit
 
-      - name: Run ruff linting
+      - name: Run pre-commit on all files
         run: |
-          # Stop the build if there are Python syntax errors or undefined names
-          ruff check . --select=E9,F63,F7,F82
-
-      - name: Run ruff format check
-        run: |
-          # Check if code is formatted correctly
-          ruff format --check .
+          pre-commit run --all-files --show-diff-on-failure
