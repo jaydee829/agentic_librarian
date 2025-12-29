@@ -45,7 +45,7 @@ def test_fetch_book_metadata_success(monkeypatch):
     assert metadata["published_date"] == "2020-01-01"
     assert metadata["description"] == "A test book description."
     assert metadata["page_count"] == 123
-    assert metadata["categories"] == ["Fiction"]
+    assert metadata["genres"] == ["Fiction"]
     assert metadata["average_rating"] == 4.5
     assert metadata["thumbnail"] == "http://example.com/thumb.jpg"
 
@@ -175,13 +175,13 @@ def test_fetch_audible_metadata_integration_live():
     metadata = md_scout.AudiobookScout().extract_metadata_with_gemini(title)
 
     assert metadata is not None, "Expected live API to return metadata"
-    assert "trackId" in metadata
-    assert "trackName" in metadata
-    assert "artistName" in metadata
+    assert "title" in metadata
+    assert "narrator" in metadata
+    assert "length_minutes" in metadata
 
     # Ensure the returned metadata matches the queried book/author (case-insensitive, tolerant)
-    title_ok = "hobbit" in metadata["trackName"].lower()
-    author_ok = "tolkien" in metadata["artistName"].lower()
+    title_ok = "way of kings" in metadata["title"].lower()
+    author_ok = "sanderson" in metadata["narrator"].lower()
     assert (
         title_ok or author_ok
     ), f"Returned metadata does not appear to match '{title}' by '{author}'"
@@ -194,13 +194,14 @@ def test_fetch_hardcover_metadata_integration_live():
         pytest.skip("Skipping integration tests (SKIP_INTEGRATION_TESTS=1)")
 
     title = "The Way of Kings"
+    format = "Audiobook"
     author = "Brandon Sanderson"
     api_key = os.environ.get("HARDCOVER_API_KEY")
 
-    metadata = md_scout.fetch_hardcover_metadata(title, author, api_key=api_key)
-
+    metadata = md_scout.fetch_hardcover_metadata(
+        title, author, format=format, api_key=api_key
+    )
     assert metadata is not None, "Expected live API to return metadata"
-    assert "id" in metadata
     assert "title" in metadata
     assert "moods" in metadata
 

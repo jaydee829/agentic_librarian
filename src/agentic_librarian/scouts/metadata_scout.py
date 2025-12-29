@@ -56,18 +56,19 @@ def fetch_google_books_metadata(title: str, author: str, api_key: str = None) ->
         # Extract the first result
         book = data["items"][0]["volumeInfo"]
 
+        isbn_13 = ""
         if "ISBN_13" in book.get("industryIdentifiers", [{}])[0].get("type", ""):
             isbn_13 = book["industryIdentifiers"][0]["identifier"]
 
         return {
             "google_id": data["items"][0]["id"],
-            "ISBN_13": isbn_13 if "isbn_13" in locals() else "",
+            "ISBN_13": isbn_13,
             "title": book.get("title"),
             "authors": book.get("authors", []),
             "published_date": book.get("publishedDate"),
             "description": book.get("description", ""),
             "page_count": book.get("pageCount", 0),
-            "categories": book.get("categories", []),  # genres
+            "genres": book.get("categories", []),  # genres
             "average_rating": book.get("averageRating"),
             "thumbnail": book.get("imageLinks", {}).get("thumbnail"),
         }
@@ -77,7 +78,9 @@ def fetch_google_books_metadata(title: str, author: str, api_key: str = None) ->
         return None
 
 
-def fetch_hardcover_metadata(title: str, author: str, api_key: str = None) -> dict:
+def fetch_hardcover_metadata(
+    title: str, author: str, format: str, api_key: str = None
+) -> dict:
     """Get metadata from Hardcover API
 
     Args:
@@ -96,25 +99,32 @@ def fetch_hardcover_metadata(title: str, author: str, api_key: str = None) -> di
         headers["Authorization"] = f"Bearer {api_key}"
 
     query = """
-        query GetBooksFromTitle($title: String!) {
-            books(where: {title: {_eq: $title}}) {
-                id
+        query GetEditionsFromTitleFormat($title: String!, $format: String!) {
+            editions(
+                where: {book: {title: {_eq: $title}}, country: {name: {_eq: "United States of America"}}, edition_format: {_eq: $format}}
+            ) {
+                isbn_13
                 title
-                pages
-                release_date
+                book {
+                contributions {
+                    author {
+                    name
+                    }
+                }
                 moods: cached_tags(path: "Mood")
                 genres: cached_tags(path: "Genre")
                 description
-                contributions {
-                    author {
-                        name
-                    }
+                pages
+                audio_seconds
                 }
+                pages
+                audio_seconds
+                release_date
             }
-        }
+            }
     """
 
-    variables = {"title": title}
+    variables = {"title": title, "format": format}
 
     try:
         response = requests.post(
@@ -127,20 +137,49 @@ def fetch_hardcover_metadata(title: str, author: str, api_key: str = None) -> di
         data = response.json()
 
         # Return the first book found
-        book = data.get("data", {}).get("books", [])[0]
-        return {  # TODO: map fields properly
-            "id": book.get("id"),
-            "title": book.get("title"),
-            "author_names": book.get("author_names", []),
-            "edition_format": book.get("edition_format"),
-            "pages": book.get("pages"),
-            "release_date": book.get("release_date"),
-            "isbn_13": book.get("isbn_13"),
-            "publisher": book.get("publisher", {}).get("name"),
-            "moods": book.get("moods", []),
-            "tags": book.get("tags", []),
-            "genres": book.get("genres", []),
+        editions = data.get("data", {}).get("editions", [])
+        moods = []
+        genres = []
+        audio_length = None
+        pages = None
+        if not editions:
+            print(f"Warning: No Hardcover results found for '{title}' by {author}")
+            return {}
+        for edition in editions:
+            raw_moods = edition.get("book", {}).get("moods", [])
+            moods.extend([raw_mood.get("tagSlug") for raw_mood in raw_moods])
+            raw_genres = edition.get("book", {}).get("genres", [])
+            genres.extend([raw_genre.get("tagSlug") for raw_genre in raw_genres])
+            audio_length = edition.get("audio_seconds") or audio_length
+            pages = edition.get("pages") or pages
+            if "audiobook" in format.lower() and edition.get("audio_seconds"):
+                book = edition.get("book", {})
+                break
+            if "audiobook" not in format.lower() and edition.get("pages"):
+                book = edition.get("book", {})
+                break
+
+        authors = []
+        for contrib in edition.get("book", {}).get("contributions", []):
+            author = contrib.get("author", {}).get("name")
+            if author:
+                authors.append(author)
+
+        release_date = edition.get("release_date")
+        if not release_date:
+            release_date = book.get("release_date")
+
+        return {
+            "title": edition.get("title"),
+            "authors": authors,
+            "edition_format": edition.get("edition_format"),
+            "page_count": pages,
+            "release_date": release_date,
+            "isbn_13": edition.get("isbn_13"),
+            "moods": set(moods),
+            "genres": set(genres),
             "description": book.get("description", ""),
+            "length_minutes": audio_length // 60 if audio_length else None,
         }
     except requests.RequestException as e:
         print(f"Hardcover API request failed: {e}")
@@ -202,7 +241,7 @@ class AudiobookScout:
         return soup.get_text()
 
     def extract_metadata_with_gemini(self, title: str) -> dict:
-        """Uses Gemini 1.5 Flash to extract data."""
+        """Uses Gemini 2.5 Flash to extract data."""
         text_content = self.fetch_page_content(title)
 
         # Define the JSON schema in the prompt
@@ -220,7 +259,7 @@ class AudiobookScout:
         """
 
         response = self._client.models.generate_content(
-            model="gemini-2.0-flash", contents=prompt
+            model="gemini-2.5-flash-lite", contents=prompt
         )
 
         text = response.text.strip()
