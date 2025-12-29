@@ -187,6 +187,149 @@ def test_fetch_audible_metadata_integration_live():
     ), f"Returned metadata does not appear to match '{title}' by '{author}'"
 
 
+def test_fetch_hardcover_metadata_no_api_key():
+    title = "The Way of Kings"
+    author = "Brandon Sanderson"
+
+    with pytest.raises(ValueError, match="Hardcover API key not set"):
+        md_scout.fetch_hardcover_metadata(
+            title, author, format="Audiobook", api_key=None
+        )
+
+
+def test_fetch_hardcover_metadata_api_failure(monkeypatch):
+    def mock_get(*args, **kwargs):
+        raise requests.exceptions.RequestException("API failure")
+
+    monkeypatch.setattr("requests.get", mock_get)
+
+    title = "The Way of Kings"
+    author = "Brandon Sanderson"
+    api_key = "dummy_api_key"
+
+    metadata = md_scout.fetch_hardcover_metadata(
+        title, author, format="Audiobook", api_key=api_key
+    )
+    assert metadata == {}, "Expected empty dict on API failure"
+
+
+def test_fetch_hardcover_metadata_no_results(monkeypatch):
+    class MockResponse:
+        @staticmethod
+        def json():
+            return {"editions": []}
+
+        @staticmethod
+        def raise_for_status():
+            pass
+
+    def mock_get(*args, **kwargs):
+        return MockResponse()
+
+    monkeypatch.setattr("requests.get", mock_get)
+
+    title = "Nonexistent Book"
+    author = "Unknown Author"
+    api_key = "dummy_api_key"
+
+    metadata = md_scout.fetch_hardcover_metadata(
+        title, author, format="Audiobook", api_key=api_key
+    )
+    assert metadata == {}, "Expected empty dict when no results found"
+
+
+def test_fetch_hardcover_metadata_paperback_format(monkeypatch):
+    class MockResponse:
+        @staticmethod
+        def json():
+            return {
+                "data": {
+                    "editions": [
+                        {
+                            "title": "Test Paperback Book",
+                            "edition_format": "Paperback",
+                            "pages": 350,
+                            "isbn_13": "1234567890123",
+                            "book": {
+                                "description": "A test paperback book description.",
+                                "contributions": [{"author": {"name": "Test Author"}}],
+                            },
+                        }
+                    ]
+                }
+            }
+
+        @staticmethod
+        def raise_for_status():
+            pass
+
+    def mock_get(*args, **kwargs):
+        return MockResponse()
+
+    monkeypatch.setattr("requests.post", mock_get)
+
+    title = "Test Paperback Book"
+    author = "Test Author"
+    api_key = "dummy_api_key"
+
+    metadata = md_scout.fetch_hardcover_metadata(
+        title, author, format="Paperback", api_key=api_key
+    )
+    assert metadata is not None
+    assert metadata["title"] == "Test Paperback Book"
+    assert metadata["edition_format"] == "Paperback"
+    assert metadata["page_count"] == 350
+    assert metadata["description"] == "A test paperback book description."
+    assert metadata["authors"] == ["Test Author"]
+
+
+def test_fetch_hardcover_metadata_audiobook_format(monkeypatch):
+    class MockResponse:
+        @staticmethod
+        def json():
+            return {
+                "data": {
+                    "editions": [
+                        {
+                            "title": "Test Audiobook",
+                            "edition_format": "Audiobook",
+                            "audio_seconds": 7200,
+                            "isbn_13": "9876543210987",
+                            "book": {
+                                "description": "A test audiobook description.",
+                                "contributions": [
+                                    {"author": {"name": "Narrator Name"}}
+                                ],
+                            },
+                        }
+                    ]
+                }
+            }
+
+        @staticmethod
+        def raise_for_status():
+            pass
+
+    def mock_get(*args, **kwargs):
+        return MockResponse()
+
+    monkeypatch.setattr("requests.post", mock_get)
+
+    title = "Test Audiobook"
+    author = "Narrator Name"
+    api_key = "dummy_api_key"
+
+    metadata = md_scout.fetch_hardcover_metadata(
+        title, author, format="Audiobook", api_key=api_key
+    )
+    assert metadata is not None
+    assert metadata["title"] == "Test Audiobook"
+    assert metadata["edition_format"] == "Audiobook"
+    assert metadata["length_minutes"] == 120  # 7200 seconds = 120 minutes
+    assert metadata["description"] == "A test audiobook description."
+    assert metadata["authors"] == ["Narrator Name"]
+
+
 @pytest.mark.integration
 def test_fetch_hardcover_metadata_integration_live():
     # Skip if explicitly disabled to avoid network calls in some CI environments

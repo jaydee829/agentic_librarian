@@ -97,6 +97,8 @@ def fetch_hardcover_metadata(
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        raise ValueError("Hardcover API key not set")
 
     query = """
         query GetEditionsFromTitleFormat($title: String!, $format: String!) {
