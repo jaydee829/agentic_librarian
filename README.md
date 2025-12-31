@@ -8,8 +8,9 @@ An agentic book recommender system
 An A2A (Agent-to-Agent) protocol-compliant agent for identifying literary tropes in books. The agent uses multiple data sources:
 
 - **LLM Knowledge**: Gemini AI for common literary tropes
-- **Internet Search**: Google Custom Search for trope mentions
+- **Internet Search**: Gemini with search grounding to combine web results with training data
 - **PostgreSQL Database**: Previously identified tropes via MCP server
+- **Canonical Trope List**: 40+ standardized tropes with automatic normalization
 
 See [TropeAgent Documentation](docs/TROPE_AGENT.md) for detailed usage instructions.
 

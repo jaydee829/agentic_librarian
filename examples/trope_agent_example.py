@@ -51,7 +51,6 @@ def main():
         print(f"\nError: {e}")
         print("\nPlease ensure the following environment variables are set:")
         print("  - GOOGLE_SEARCH_API_KEY")
-        print("  - SEARCH_ENGINE_ID")
         print("  - MCP_SERVER_URL")
         return
 

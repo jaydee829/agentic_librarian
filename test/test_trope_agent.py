@@ -12,7 +12,6 @@ from src.agentic_librarian.agents.trope_agent import TropeAgent
 def mock_env_vars(monkeypatch):
     """Mock environment variables needed for TropeAgent."""
     monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "test_api_key")
-    monkeypatch.setenv("SEARCH_ENGINE_ID", "test_search_engine_id")
     monkeypatch.setenv("MCP_SERVER_URL", "http://test-mcp-server.com")
 
 
@@ -27,7 +26,6 @@ def trope_agent(mock_env_vars):
 def test_trope_agent_initialization_missing_api_key(monkeypatch):
     """Test that TropeAgent raises error when API key is missing."""
     monkeypatch.delenv("GOOGLE_SEARCH_API_KEY", raising=False)
-    monkeypatch.setenv("SEARCH_ENGINE_ID", "test_search_engine_id")
     monkeypatch.setenv("MCP_SERVER_URL", "http://test-mcp-server.com")
 
     with (
@@ -37,23 +35,9 @@ def test_trope_agent_initialization_missing_api_key(monkeypatch):
         TropeAgent()
 
 
-def test_trope_agent_initialization_missing_search_engine_id(monkeypatch):
-    """Test that TropeAgent raises error when search engine ID is missing."""
-    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "test_api_key")
-    monkeypatch.delenv("SEARCH_ENGINE_ID", raising=False)
-    monkeypatch.setenv("MCP_SERVER_URL", "http://test-mcp-server.com")
-
-    with (
-        pytest.raises(ValueError, match="SEARCH_ENGINE_ID"),
-        patch("src.agentic_librarian.agents.trope_agent.genai.Client"),
-    ):
-        TropeAgent()
-
-
 def test_trope_agent_initialization_missing_mcp_url(monkeypatch):
     """Test that TropeAgent raises error when MCP server URL is missing."""
     monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "test_api_key")
-    monkeypatch.setenv("SEARCH_ENGINE_ID", "test_search_engine_id")
     monkeypatch.delenv("MCP_SERVER_URL", raising=False)
 
     with (
@@ -164,50 +148,39 @@ def test_get_tropes_from_llm_error_handling(trope_agent):
 
 
 def test_get_tropes_from_search_success(trope_agent):
-    """Test getting tropes from internet search."""
-    # Mock Google Custom Search
-    mock_search_service = MagicMock()
-    mock_cse = MagicMock()
-    mock_search_service.cse.return_value = mock_cse
-    mock_cse.list.return_value.execute.return_value = {
-        "items": [
-            {"snippet": "This book features the Hero's Journey trope prominently."},
-            {"snippet": "A classic Chosen One narrative with elements of prophecy."},
-        ]
-    }
-
-    # Mock LLM response for snippet analysis
+    """Test getting tropes from internet search using Gemini with search grounding."""
+    # Mock Gemini response with search grounding
     mock_llm_response = MagicMock()
     mock_llm_response.text = json.dumps({"tropes": [{"name": "Hero's Journey", "confidence": 0.8}]})
 
-    with patch("src.agentic_librarian.agents.trope_agent.build", return_value=mock_search_service):
-        trope_agent._gemini_client.models.generate_content = MagicMock(return_value=mock_llm_response)
+    trope_agent._gemini_client.models.generate_content = MagicMock(return_value=mock_llm_response)
 
-        result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
+    result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
 
-        assert "Hero's Journey" in result
-        assert result["Hero's Journey"]["source"] == "internet_search"
+    assert "Hero's Journey" in result
+    assert result["Hero's Journey"]["source"] == "internet_search"
 
 
 def test_get_tropes_from_search_no_results(trope_agent):
-    """Test search with no results."""
-    mock_search_service = MagicMock()
-    mock_cse = MagicMock()
-    mock_search_service.cse.return_value = mock_cse
-    mock_cse.list.return_value.execute.return_value = {}
+    """Test search with no results returns empty dict."""
+    # Mock Gemini response with no tropes
+    mock_llm_response = MagicMock()
+    mock_llm_response.text = json.dumps({"tropes": []})
 
-    with patch("src.agentic_librarian.agents.trope_agent.build", return_value=mock_search_service):
-        result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
+    trope_agent._gemini_client.models.generate_content = MagicMock(return_value=mock_llm_response)
 
-        assert result == {}
+    result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
+
+    assert result == {}
 
 
 def test_get_tropes_from_search_error_handling(trope_agent):
     """Test error handling in search trope extraction."""
-    with patch("src.agentic_librarian.agents.trope_agent.build", side_effect=Exception("Search Error")):
-        result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
+    trope_agent._gemini_client.models.generate_content = MagicMock(side_effect=Exception("Search Error"))
 
-        assert result == {}
+    result = trope_agent._get_tropes_from_search("Test Book", "Test Author")
+
+    assert result == {}
 
 
 def test_get_tropes_from_database_success(trope_agent):
@@ -340,3 +313,21 @@ def test_identify_tropes_integration(trope_agent, monkeypatch):
     assert "Hero's Journey" in names
     assert "Chosen One" in names
     assert "Magic System" in names
+
+
+def test_normalize_trope_name_exact_match(trope_agent):
+    """Test normalization with exact match."""
+    assert trope_agent._normalize_trope_name("Hero's Journey") == "Hero's Journey"
+    assert trope_agent._normalize_trope_name("chosen one") == "Chosen One"
+    assert trope_agent._normalize_trope_name("DARK LORD") == "Dark Lord"
+
+
+def test_normalize_trope_name_partial_match(trope_agent):
+    """Test normalization with partial match."""
+    assert trope_agent._normalize_trope_name("The Hero's Journey") == "Hero's Journey"
+    assert trope_agent._normalize_trope_name("Chosen One Prophecy") == "Chosen One"
+
+
+def test_normalize_trope_name_no_match(trope_agent):
+    """Test normalization with no match returns original."""
+    assert trope_agent._normalize_trope_name("Completely New Trope") == "Completely New Trope"

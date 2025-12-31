@@ -3,7 +3,6 @@ Simple integration test to verify TropeAgent works end-to-end.
 
 This test requires environment variables to be set:
 - GOOGLE_SEARCH_API_KEY
-- SEARCH_ENGINE_ID
 - MCP_SERVER_URL
 
 Run with: python -m pytest test/test_trope_agent_integration.py -v -s
@@ -21,7 +20,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def check_env_vars():
     """Check if required environment variables are set."""
-    required_vars = ["GOOGLE_SEARCH_API_KEY", "SEARCH_ENGINE_ID", "MCP_SERVER_URL"]
+    required_vars = ["GOOGLE_SEARCH_API_KEY", "MCP_SERVER_URL"]
     missing = [var for var in required_vars if not os.environ.get(var)]
 
     if missing:

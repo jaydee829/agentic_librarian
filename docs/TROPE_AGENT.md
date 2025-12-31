@@ -5,13 +5,15 @@
 The `TropeAgent` is an A2A (Agent-to-Agent) protocol-compliant agent that identifies literary tropes in books. It uses a multi-source approach combining:
 
 1. **LLM Knowledge**: Gemini AI's knowledge base for common literary tropes
-2. **Internet Search**: Google Custom Search to find trope mentions in reviews and analyses
+2. **Internet Search**: Gemini with search grounding to natively combine search results with training data
 3. **PostgreSQL Database**: Previously identified tropes via MCP (Model Context Protocol) server
 
 ## Features
 
 - **A2A Protocol Compliance**: JSON-based request/response format
 - **Multi-source Intelligence**: Combines information from three different sources
+- **Canonical Trope List**: Uses a standardized list of 40+ tropes to minimize variation
+- **Trope Normalization**: Automatically maps variations to canonical trope names
 - **Confidence Scoring**: Each trope includes a confidence score (0.0-1.0)
 - **Source Attribution**: Tracks which sources identified each trope
 - **Weighted Ranking**: Prioritizes tropes found in multiple sources
@@ -31,21 +33,19 @@ uv pip install -e ".[dev]"
 The TropeAgent requires the following environment variables:
 
 ```bash
-# Google API credentials for search and Gemini
+# Google API credentials for Gemini AI (includes search grounding)
 export GOOGLE_SEARCH_API_KEY="your-google-api-key"
-export SEARCH_ENGINE_ID="your-custom-search-engine-id"
 
 # MCP server URL for PostgreSQL access
 export MCP_SERVER_URL="http://your-mcp-server:port"
 ```
 
-### Setting up Google Custom Search
+### Setting up Google API Key
 
 1. Create a Google Cloud project
-2. Enable the Custom Search API
+2. Enable the Gemini API
 3. Create API credentials
-4. Set up a Custom Search Engine at https://cse.google.com
-5. Note your Search Engine ID (cx parameter)
+4. Set the `GOOGLE_SEARCH_API_KEY` environment variable
 
 ### Setting up MCP Server
 
@@ -178,9 +178,9 @@ Identify the top n tropes in a book using multiple data sources.
 **Returns:**
 - list[dict]: List of trope dictionaries with name, confidence, and sources.
 
-## Common Tropes
+## Canonical Tropes
 
-The agent can identify various literary tropes, including but not limited to:
+The agent uses a standardized list of 40+ canonical tropes to minimize variation and ensure consistency:
 
 - **Hero's Journey**: Classic monomyth narrative structure
 - **Chosen One**: Protagonist with special destiny
@@ -197,14 +197,30 @@ The agent can identify various literary tropes, including but not limited to:
 - **Reluctant Hero**: Protagonist who resists their role
 - **Fish Out of Water**: Character in unfamiliar setting
 - **Secret Identity**: Hidden nature of character
+- **Betrayal**, **Revenge Quest**, **Star-Crossed Lovers**, **Underdog**
+- **Training Montage**, **Ancient Evil**, **Lost Heir**, **Hidden Kingdom**
+- **Portal Fantasy**, **Heist**, **Tournament Arc**, **Memory Loss**
+- **Time Loop**, **Parallel Worlds**, **Dystopia**, **Post-Apocalyptic**
+- **Utopia Gone Wrong**, **Forbidden Love**, **Artificial Intelligence**
+- **First Contact**, **Space Opera**, **Cosmic Horror**, **Body Horror**
+- **Gothic Horror**, **Psychological Horror**
+
+Trope names are automatically normalized to this canonical list, with variations mapped to the standard names.
 
 ## How It Works
 
 ### Multi-Source Trope Identification
 
 1. **LLM Knowledge**: Uses Gemini AI to analyze the book based on its training data
-2. **Internet Search**: Searches for reviews, analyses, and discussions mentioning tropes
+2. **Internet Search**: Uses Gemini with search grounding to natively combine web search results with LLM knowledge
 3. **Database Query**: Retrieves previously identified tropes from PostgreSQL
+
+### Trope Normalization
+
+Each trope identified from any source is normalized to the canonical list:
+- Exact matches (case-insensitive) are mapped directly
+- Partial matches with 60%+ overlap are mapped to the closest canonical trope
+- Unmatched tropes are preserved as-is to allow for new discoveries
 
 ### Confidence Scoring
 
@@ -273,11 +289,7 @@ Potential improvements:
 
 ### "GOOGLE_SEARCH_API_KEY environment variable not set"
 
-Ensure you have set the `GOOGLE_SEARCH_API_KEY` environment variable with a valid Google API key.
-
-### "SEARCH_ENGINE_ID environment variable not set"
-
-Set up a Google Custom Search Engine and configure the `SEARCH_ENGINE_ID` environment variable.
+Ensure you have set the `GOOGLE_SEARCH_API_KEY` environment variable with a valid Google API key that has access to Gemini API.
 
 ### "MCP_SERVER_URL environment variable not set"
 

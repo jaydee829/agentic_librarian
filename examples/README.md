@@ -14,7 +14,6 @@ Set the following environment variables:
 
 ```bash
 export GOOGLE_SEARCH_API_KEY="your-google-api-key"
-export SEARCH_ENGINE_ID="your-custom-search-engine-id"
 export MCP_SERVER_URL="http://your-mcp-server:port"
 ```
 

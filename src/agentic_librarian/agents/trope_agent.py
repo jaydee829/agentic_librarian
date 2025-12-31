@@ -15,7 +15,7 @@ from typing import Any
 
 import requests
 from google import genai
-from googleapiclient.discovery import build
+from google.genai.types import GoogleSearch, Tool
 
 # Load environment variables from .env if present (for local dev)
 try:
@@ -26,13 +26,58 @@ except ImportError:
     pass
 
 
+# Canonical list of literary tropes for standardization
+CANONICAL_TROPES = [
+    "Hero's Journey",
+    "Chosen One",
+    "Enemies to Lovers",
+    "Dark Lord",
+    "Prophecy",
+    "Coming of Age",
+    "Redemption Arc",
+    "Found Family",
+    "MacGuffin",
+    "Love Triangle",
+    "Magic System",
+    "Mentor's Death",
+    "Reluctant Hero",
+    "Fish Out of Water",
+    "Secret Identity",
+    "Betrayal",
+    "Revenge Quest",
+    "Star-Crossed Lovers",
+    "Underdog",
+    "Training Montage",
+    "Ancient Evil",
+    "Lost Heir",
+    "Hidden Kingdom",
+    "Portal Fantasy",
+    "Heist",
+    "Tournament Arc",
+    "Memory Loss",
+    "Time Loop",
+    "Parallel Worlds",
+    "Dystopia",
+    "Post-Apocalyptic",
+    "Utopia Gone Wrong",
+    "Forbidden Love",
+    "Artificial Intelligence",
+    "First Contact",
+    "Space Opera",
+    "Cosmic Horror",
+    "Body Horror",
+    "Gothic Horror",
+    "Psychological Horror",
+]
+
+
 class TropeAgent:
     """
     Agent for identifying literary tropes in books.
 
     This agent uses a multi-source approach to identify tropes:
     1. LLM knowledge (via Gemini)
-    2. Internet search (Google Custom Search)
+    2. Internet search (via Gemini with search grounding)
     3. PostgreSQL database (via MCP server)
 
     The agent follows A2A protocol with JSON input/output.
@@ -52,11 +97,6 @@ class TropeAgent:
             raise ValueError("GOOGLE_SEARCH_API_KEY environment variable not set")
 
         self._gemini_client = genai.Client(api_key=self._gemini_api_key)
-
-        # Initialize Google Custom Search for internet search
-        self._search_engine_id = os.environ.get("SEARCH_ENGINE_ID")
-        if not self._search_engine_id:
-            raise ValueError("SEARCH_ENGINE_ID environment variable not set")
 
         # Initialize MCP server connection
         self._mcp_server_url = mcp_server_url or os.environ.get("MCP_SERVER_URL")
@@ -134,6 +174,36 @@ class TropeAgent:
 
         return combined_tropes
 
+    def _normalize_trope_name(self, trope_name: str) -> str:
+        """
+        Normalize a trope name to the canonical list.
+
+        Uses fuzzy matching to map variations to standard trope names.
+
+        Args:
+            trope_name (str): Raw trope name from a data source
+
+        Returns:
+            str: Normalized trope name from CANONICAL_TROPES, or original if no match
+        """
+        trope_lower = trope_name.lower().strip()
+
+        # Exact match (case-insensitive)
+        for canonical in CANONICAL_TROPES:
+            if canonical.lower() == trope_lower:
+                return canonical
+
+        # Partial match - check if trope is contained in canonical or vice versa
+        for canonical in CANONICAL_TROPES:
+            canonical_lower = canonical.lower()
+            if (trope_lower in canonical_lower or canonical_lower in trope_lower) and len(trope_lower) >= len(
+                canonical_lower
+            ) * 0.6:
+                return canonical
+
+        # If no match found, return the original (allows for new tropes but maintains consistency)
+        return trope_name
+
     def _get_tropes_from_llm(self, title: str, author: str) -> dict[str, dict]:
         """
         Get tropes from LLM knowledge base.
@@ -145,6 +215,7 @@ class TropeAgent:
         Returns:
             dict: Dictionary of tropes with confidence scores and sources
         """
+        tropes_list = "\n        - ".join(CANONICAL_TROPES)
         prompt = f"""
         Analyze the book "{title}" by {author} and identify the major literary tropes present.
         A trope is a common or recurring literary device, theme, motif, or cliché.
@@ -160,18 +231,8 @@ class TropeAgent:
             ]
         }}
 
-        Focus on well-known tropes like:
-        - Hero's Journey
-        - Chosen One
-        - Enemies to Lovers
-        - Dark Lord
-        - Prophecy
-        - Coming of Age
-        - Redemption Arc
-        - Found Family
-        - MacGuffin
-        - Love Triangle
-        etc.
+        Focus on these well-known tropes (use these exact names when possible):
+        - {tropes_list}
         """
 
         try:
@@ -184,7 +245,8 @@ class TropeAgent:
             data = json.loads(text)
             tropes = {}
             for trope in data.get("tropes", []):
-                tropes[trope["name"]] = {"confidence": trope["confidence"], "source": "llm_knowledge"}
+                normalized_name = self._normalize_trope_name(trope["name"])
+                tropes[normalized_name] = {"confidence": trope["confidence"], "source": "llm_knowledge"}
             return tropes
         except Exception as e:
             print(f"Error getting tropes from LLM: {e}")
@@ -192,7 +254,10 @@ class TropeAgent:
 
     def _get_tropes_from_search(self, title: str, author: str) -> dict[str, dict]:
         """
-        Get tropes from internet search results.
+        Get tropes from internet search using Gemini with search grounding.
+
+        Uses Gemini's built-in search capability to natively combine
+        search results with training data for better trope identification.
 
         Args:
             title (str): Book title
@@ -202,57 +267,46 @@ class TropeAgent:
             dict: Dictionary of tropes with confidence scores and sources
         """
         try:
-            # Search for tropes mentioned in web results
-            service = build("customsearch", "v1", developerKey=self._gemini_api_key)
-            search_results = (
-                service.cse()
-                .list(
-                    q=f'"{title}" "{author}" tropes themes literary devices',
-                    cx=self._search_engine_id,
-                    num=5,
-                )
-                .execute()
+            # Use Gemini with Google Search grounding
+            tropes_list = "\n        - ".join(CANONICAL_TROPES)
+            prompt = f"""
+            Search the internet and analyze information about "{title}" by {author}.
+            Based on reviews, analyses, and discussions found online, identify the major literary tropes present.
+
+            Return ONLY a raw JSON object:
+            {{
+                "tropes": [
+                    {{
+                        "name": "trope name",
+                        "confidence": 0.0-1.0
+                    }}
+                ]
+            }}
+
+            Use these canonical trope names when possible:
+            - {tropes_list}
+            """
+
+            # Create search tool for grounding
+            google_search_tool = Tool(google_search=GoogleSearch())
+
+            response = self._gemini_client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=prompt,
+                config={"tools": [google_search_tool]},
             )
 
-            # Extract snippets and analyze for tropes
-            snippets = []
-            if "items" in search_results:
-                for item in search_results["items"]:
-                    snippet = item.get("snippet", "")
-                    snippets.append(snippet)
+            text = response.text.strip()
+            if text.startswith("```json"):
+                text = text.replace("```json", "").replace("```", "").strip()
 
-            # Use LLM to extract tropes from search snippets
-            if snippets:
-                combined_text = "\n\n".join(snippets)
-                prompt = f"""
-                From the following search results about "{title}" by {author}, extract literary tropes mentioned.
-                Return ONLY a raw JSON object:
-                {{
-                    "tropes": [
-                        {{
-                            "name": "trope name",
-                            "confidence": 0.0-1.0
-                        }}
-                    ]
-                }}
+            data = json.loads(text)
+            tropes = {}
+            for trope in data.get("tropes", []):
+                normalized_name = self._normalize_trope_name(trope["name"])
+                tropes[normalized_name] = {"confidence": trope["confidence"], "source": "internet_search"}
+            return tropes
 
-                Search results:
-                {combined_text[:5000]}
-                """
-
-                response = self._gemini_client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
-
-                text = response.text.strip()
-                if text.startswith("```json"):
-                    text = text.replace("```json", "").replace("```", "").strip()
-
-                data = json.loads(text)
-                tropes = {}
-                for trope in data.get("tropes", []):
-                    tropes[trope["name"]] = {"confidence": trope["confidence"], "source": "internet_search"}
-                return tropes
-
-            return {}
         except Exception as e:
             print(f"Error getting tropes from search: {e}")
             return {}
@@ -280,7 +334,8 @@ class TropeAgent:
                 data = response.json()
                 tropes = {}
                 for trope in data.get("tropes", []):
-                    tropes[trope["name"]] = {"confidence": trope.get("confidence", 0.7), "source": "database"}
+                    normalized_name = self._normalize_trope_name(trope["name"])
+                    tropes[normalized_name] = {"confidence": trope.get("confidence", 0.7), "source": "database"}
                 return tropes
 
             return {}
