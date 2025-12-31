@@ -1,6 +1,42 @@
 # agentic_librarian
 An agentic book recommender system
 
+## Features
+
+### TropeAgent
+
+An A2A (Agent-to-Agent) protocol-compliant agent for identifying literary tropes in books. The agent uses multiple data sources:
+
+- **LLM Knowledge**: Gemini AI for common literary tropes
+- **Internet Search**: Google Custom Search for trope mentions
+- **PostgreSQL Database**: Previously identified tropes via MCP server
+
+See [TropeAgent Documentation](docs/TROPE_AGENT.md) for detailed usage instructions.
+
+#### Quick Start
+
+```python
+from agentic_librarian.agents import TropeAgent
+
+# Initialize the agent
+agent = TropeAgent()
+
+# Create an A2A protocol request
+request = {
+    "title": "The Way of Kings",
+    "author": "Brandon Sanderson",
+    "top_n": 5
+}
+
+# Process the request
+response = agent.process_request(request)
+
+# Handle the response
+if response["status"] == "success":
+    for trope in response["tropes"]:
+        print(f"{trope['name']}: {trope['confidence']:.2%}")
+```
+
 ## Development Environment
 
 ### Docker Setup
