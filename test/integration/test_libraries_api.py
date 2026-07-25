@@ -25,7 +25,7 @@ def client(db_url, monkeypatch):
 
 
 def test_search_libraries_filters_directory_snapshot(client, monkeypatch):
-    """GET /libraries/search?q=king returns matches from the directory snapshot."""
+    """GET /api/libraries/search?q=king returns matches from the directory snapshot."""
     fake_results = [{"slug": "kcls", "name": "King County Library System"}]
     monkeypatch.setattr(directory, "search", lambda q, **kw: fake_results)
 
@@ -35,7 +35,7 @@ def test_search_libraries_filters_directory_snapshot(client, monkeypatch):
 
 
 def test_put_then_get_libraries_round_trips_in_order(client, db_url):
-    """PUT /me/libraries then GET /me/libraries preserves the full list in order."""
+    """PUT /api/me/libraries then GET /api/me/libraries preserves the full list in order."""
     payload = {
         "libraries": [
             {"slug": "seattle", "name": "Seattle Public Library"},
@@ -67,14 +67,14 @@ def test_put_libraries_replaces_previous_set(client, db_url):
 
 
 def test_get_libraries_empty_when_none_saved(client, db_url):
-    """GET /me/libraries returns an empty list when the user has no saved libraries."""
+    """GET /api/me/libraries returns an empty list when the user has no saved libraries."""
     resp = client.get("/api/me/libraries")
     assert resp.status_code == 200
     assert resp.json() == {"libraries": []}
 
 
 def test_put_libraries_422_on_duplicate_slugs(client):
-    """PUT /me/libraries returns 422 when the request body contains duplicate slugs."""
+    """PUT /api/me/libraries returns 422 when the request body contains duplicate slugs."""
     payload = {
         "libraries": [
             {"slug": "seattle", "name": "Seattle Public Library"},

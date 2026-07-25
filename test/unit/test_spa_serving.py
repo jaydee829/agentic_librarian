@@ -136,7 +136,7 @@ def test_navigation_to_a_real_static_file_is_not_hijacked(tmp_path, monkeypatch)
 
 def test_api_json_responses_are_no_store(tmp_path, monkeypatch):
     # Private API JSON must never sit in a browser/proxy cache — this is also what let a
-    # stale authed /history body render as a page after the route collision.
+    # stale authed /api/history body render as a page after the route collision.
     dist = _build_dist(tmp_path)
     monkeypatch.setenv("SPA_DIST_DIR", str(dist))
     r = TestClient(app).get("/health")

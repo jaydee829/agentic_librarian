@@ -219,7 +219,7 @@ def _db(db_url):
 
 def _my_entry(client, fmt="ebook"):
     """The fixture's seeded read, selected by title AND format: several tests seed a second
-    'Shared Book' read at the SAME date_completed, and /history tie-breaks equal dates by
+    'Shared Book' read at the SAME date_completed, and /api/history tie-breaks equal dates by
     ReadingHistory.id — a random UUID — so title alone is a coin flip (the CI-only flake:
     the collision test grabbed the audiobook row and its PATCH became a same-format 200)."""
     return next(h for h in client.get("/api/history").json() if h["title"] == "Shared Book" and h["format"] == fmt)

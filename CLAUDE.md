@@ -86,8 +86,11 @@ There is nothing pre-existing to filter out by eye, so **any failure is a real f
 investigate it, don't `git stash` to "confirm it's baseline" (that dance is retired). This
 supersedes the earlier reading of guidance #9 for the unit suite.
 
-The excluded tests still run in CI (deploy.yml / lint.yml pass the same `-m` on the CLI, which
-overrides `addopts`, and install `.[dev,claude]`). To run them yourself: override the marker
+Coverage is not lost. The two `claude_agent_sdk` tests DO run in CI — it installs
+`.[dev,claude]`, so the `importorskip` skips only locally. The `api_dependent`/`live` tests
+run in NEITHER these CI jobs NOR a bare local run — deploy.yml / lint.yml pass the same `-m`
+string on the CLI, so they are deselected there too; they execute only in operator/live
+contexts (`live` = "operator-run, never CI"). To run them yourself: override the marker
 filter, e.g. `-m api_dependent` (needs real Gemini/Hardcover keys, and an authenticated
-`claude` CLI for `test_claude_grounded_scouts_produce_styles_and_tropes`), and
+`claude` CLI for `test_claude_grounded_scouts_produce_styles_and_tropes`), plus
 `pip install -e '.[claude]'` for the `claude_agent_sdk` tests.

@@ -55,7 +55,7 @@ def _seed_library(manager, *, user_id, slug, name, sort_order=0):
 
 
 def test_availability_returns_links_and_empty_libby_when_service_returns_empty(client, db_url, monkeypatch):
-    """POST /availability for a seeded work returns 200 with links (including amazon)
+    """POST /api/availability for a seeded work returns 200 with links (including amazon)
     and libby==[] when service.batch_availability is patched to return an all-empty dict."""
     manager = DatabaseManager(db_url)
     work_id = _seed_work(manager, title="Dune", author_name="Frank Herbert")
@@ -83,7 +83,7 @@ def test_availability_returns_links_and_empty_libby_when_service_returns_empty(c
 
 
 def test_availability_returns_200_when_service_returns_none(client, db_url, monkeypatch):
-    """POST /availability is always 200 even when service.batch_availability returns None
+    """POST /api/availability is always 200 even when service.batch_availability returns None
     for a pair (Thunder down). libby badge is simply absent from results."""
     manager = DatabaseManager(db_url)
     work_id = _seed_work(manager, title="Foundation", author_name="Isaac Asimov")

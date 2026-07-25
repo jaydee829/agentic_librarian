@@ -1,4 +1,4 @@
-"""GET /works against the real schema in the isolated test DB (ADR-034)."""
+"""GET /api/works against the real schema in the isolated test DB (ADR-034)."""
 
 from unittest.mock import patch
 
