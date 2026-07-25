@@ -54,7 +54,7 @@ def test_add_book_persists_logs_and_enqueues(client, monkeypatch):
     )
 
     resp = client.post(
-        "/books", json={"title": "Project Hail Mary", "author": "Andy Weir", "format": "ebook", "rating": 5}
+        "/api/books", json={"title": "Project Hail Mary", "author": "Andy Weir", "format": "ebook", "rating": 5}
     )
 
     assert resp.status_code == 200
@@ -70,7 +70,7 @@ def test_add_book_not_found_returns_404(client, monkeypatch):
     monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
     _stub_fast(monkeypatch, {})  # scouts find nothing
 
-    resp = client.post("/books", json={"title": "Nope", "author": "Nobody"})
+    resp = client.post("/api/books", json={"title": "Nope", "author": "Nobody"})
     assert resp.status_code == 404
 
 
@@ -91,7 +91,8 @@ def test_add_book_rereads_do_not_reenqueue(client, db_url, monkeypatch):
     _stub_fast(monkeypatch, {"title": "Dune", "contributors": [{"name": "Frank Herbert", "role": "Author"}]})
 
     resp = client.post(
-        "/books", json={"title": "Dune", "author": "Frank Herbert", "format": "ebook", "date_completed": "2020-01-01"}
+        "/api/books",
+        json={"title": "Dune", "author": "Frank Herbert", "format": "ebook", "date_completed": "2020-01-01"},
     )
     assert resp.status_code == 200
     assert resp.json()["enrichment_enqueued"] is False  # de-dup hit → no re-enqueue
@@ -102,12 +103,12 @@ def test_add_book_rejects_future_date(client, monkeypatch):
     monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
     _stub_fast(monkeypatch, {"title": "X", "contributors": [{"name": "Y", "role": "Author"}]})
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    resp = client.post("/books", json={"title": "X", "author": "Y", "date_completed": tomorrow})
+    resp = client.post("/api/books", json={"title": "X", "author": "Y", "date_completed": tomorrow})
     assert resp.status_code == 422
 
 
 def test_add_book_rejects_blank_title(client):
-    resp = client.post("/books", json={"title": "   ", "author": "Y"})
+    resp = client.post("/api/books", json={"title": "   ", "author": "Y"})
     assert resp.status_code == 422
 
 
@@ -121,7 +122,7 @@ def test_add_book_is_user_scoped(client, db_url, monkeypatch):
         s.flush()
     _stub_fast(monkeypatch, {"title": "Hyperion", "contributors": [{"name": "Dan Simmons", "role": "Author"}]})
 
-    client.post("/books", json={"title": "Hyperion", "author": "Dan Simmons"})
+    client.post("/api/books", json={"title": "Hyperion", "author": "Dan Simmons"})
     with manager.get_session() as s:
         rows = s.query(ReadingHistory).filter(ReadingHistory.user_id == other).all()
         assert rows == []  # nothing logged to the other user
@@ -132,7 +133,7 @@ def test_add_book_is_user_scoped(client, db_url, monkeypatch):
 def test_add_book_rejects_boolean_rating(client, monkeypatch):
     monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
     _stub_fast(monkeypatch, {"title": "X", "contributors": [{"name": "Y", "role": "Author"}]})
-    resp = client.post("/books", json={"title": "X", "author": "Y", "rating": True})
+    resp = client.post("/api/books", json={"title": "X", "author": "Y", "rating": True})
     assert resp.status_code == 422
 
 
@@ -144,8 +145,8 @@ def test_add_book_same_date_reports_already_logged(client, monkeypatch):
     )
     payload = {"title": "Solaris", "author": "Stanislaw Lem", "format": "ebook", "date_completed": "2021-05-01"}
 
-    first = client.post("/books", json=payload).json()
-    second = client.post("/books", json=payload).json()
+    first = client.post("/api/books", json=payload).json()
+    second = client.post("/api/books", json=payload).json()
 
     assert first["already_logged"] is False and first["read_number"] == 1
     assert second["already_logged"] is True  # same work + same date = no new read-event
@@ -162,7 +163,7 @@ def test_add_book_survives_enqueue_failure(client, monkeypatch):
         {"title": "Blindsight", "contributors": [{"name": "Peter Watts", "role": "Author"}], "genres": [], "moods": []},
     )
 
-    resp = client.post("/books", json={"title": "Blindsight", "author": "Peter Watts"})
+    resp = client.post("/api/books", json={"title": "Blindsight", "author": "Peter Watts"})
     assert resp.status_code == 200  # the book is saved even though enqueue raised
     assert resp.json()["enrichment_enqueued"] is False
 
@@ -192,7 +193,7 @@ def test_add_book_resolves_active_pick(client, db_url, monkeypatch):
         monkeypatch, {"title": "The Fifth Season", "contributors": [{"name": "N. K. Jemisin", "role": "Author"}]}
     )
 
-    resp = client.post("/books", json={"title": "The Fifth Season", "author": "N. K. Jemisin", "format": "ebook"})
+    resp = client.post("/api/books", json={"title": "The Fifth Season", "author": "N. K. Jemisin", "format": "ebook"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -208,7 +209,7 @@ def test_add_book_without_pick_reports_not_resolved(client, monkeypatch):
     monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
     _stub_fast(monkeypatch, {"title": "Piranesi", "contributors": [{"name": "Susanna Clarke", "role": "Author"}]})
 
-    resp = client.post("/books", json={"title": "Piranesi", "author": "Susanna Clarke"})
+    resp = client.post("/api/books", json={"title": "Piranesi", "author": "Susanna Clarke"})
     assert resp.status_code == 200
     assert resp.json()["pick_resolved"] is False
 
@@ -228,7 +229,7 @@ def test_add_book_duplicate_still_resolves_pick(client, db_url, monkeypatch):
     _stub_fast(monkeypatch, {"title": "Annihilation", "contributors": [{"name": "Jeff VanderMeer", "role": "Author"}]})
 
     resp = client.post(
-        "/books",
+        "/api/books",
         json={"title": "Annihilation", "author": "Jeff VanderMeer", "format": "ebook", "date_completed": "2021-05-01"},
     )
 
@@ -246,7 +247,7 @@ def test_add_book_leaves_dismissed_pick_untouched(client, db_url, monkeypatch):
     _work_id, sug_id = _seed_picked_work(db_url, title="Uprooted", author="Naomi Novik", status="Dismissed")
     _stub_fast(monkeypatch, {"title": "Uprooted", "contributors": [{"name": "Naomi Novik", "role": "Author"}]})
 
-    resp = client.post("/books", json={"title": "Uprooted", "author": "Naomi Novik"})
+    resp = client.post("/api/books", json={"title": "Uprooted", "author": "Naomi Novik"})
 
     assert resp.status_code == 200
     assert resp.json()["pick_resolved"] is False
@@ -264,7 +265,7 @@ def test_add_book_leaves_other_users_pick_untouched(client, db_url, monkeypatch)
     _work_id, sug_id = _seed_picked_work(db_url, title="Circe", author="Madeline Miller", user_id=other)
     _stub_fast(monkeypatch, {"title": "Circe", "contributors": [{"name": "Madeline Miller", "role": "Author"}]})
 
-    resp = client.post("/books", json={"title": "Circe", "author": "Madeline Miller"})
+    resp = client.post("/api/books", json={"title": "Circe", "author": "Madeline Miller"})
 
     assert resp.status_code == 200
     assert resp.json()["pick_resolved"] is False

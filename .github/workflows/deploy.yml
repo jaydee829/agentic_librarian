@@ -170,13 +170,13 @@ jobs:
           URL="${{ steps.deploy.outputs.url }}"
           TOKEN="${{ steps.smoke-token.outputs.id_token }}"
           curl -fsS -H "Authorization: Bearer ${TOKEN}" "${URL}/health"
-          # /history is Firebase-gated (Lift 1): IAM passes via X-Serverless-Authorization,
+          # /api/history is Firebase-gated (Lift 1): IAM passes via X-Serverless-Authorization,
           # no Firebase token supplied → the app MUST answer 401. DB connectivity is now
           # verified by the operator runbook (the deployer cannot mint Firebase tokens).
           code=$(curl -s -o /dev/null -w '%{http_code}' \
-            -H "X-Serverless-Authorization: Bearer ${TOKEN}" "${URL}/history")
+            -H "X-Serverless-Authorization: Bearer ${TOKEN}" "${URL}/api/history")
           if [ "${code}" != "401" ]; then
-            echo "::error::expected 401 from unauthenticated /history, got ${code}"
+            echo "::error::expected 401 from unauthenticated /api/history, got ${code}"
             exit 1
           fi
           echo "Live smoke passed: /health green; auth layer enforcing (401 without Firebase token)."

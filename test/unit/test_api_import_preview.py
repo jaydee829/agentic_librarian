@@ -9,7 +9,7 @@ from agentic_librarian.api.imports import MAX_ROWS, router
 from agentic_librarian.core.user_context import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
 
 app = FastAPI()
-app.include_router(router)
+app.include_router(router, prefix="/api")
 app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=DEFAULT_USER_ID, email=DEFAULT_USER_EMAIL)
 client = TestClient(app)
 
@@ -23,7 +23,7 @@ GOODREADS_CSV = (
 def _upload(csv_text, mapping=None):
     data = {"mapping": json.dumps(mapping)} if mapping else {}
     return client.post(
-        "/import/preview",
+        "/api/import/preview",
         files={"file": ("export.csv", io.BytesIO(csv_text.encode()), "text/csv")},
         data=data,
     )

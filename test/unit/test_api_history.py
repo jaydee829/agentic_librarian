@@ -35,7 +35,7 @@ def test_get_history_empty():
         mock_query.limit.return_value = mock_query
         mock_query.all.return_value = []
 
-        response = client.get("/history")
+        response = client.get("/api/history")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -67,7 +67,7 @@ def test_get_history_with_data():
         mock_query.limit.return_value = mock_query
         mock_query.all.return_value = [mock_history]
 
-        response = client.get("/history")
+        response = client.get("/api/history")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 1
@@ -104,7 +104,7 @@ def test_get_history_no_date():
         mock_query.limit.return_value = mock_query
         mock_query.all.return_value = [mock_history]
 
-        response = client.get("/history")
+        response = client.get("/api/history")
         assert response.status_code == 200
         data = response.json()
         assert data[0]["date_completed"] is None
@@ -129,16 +129,16 @@ def test_get_history_pagination_params_forwarded():
         mock_db.get_session.return_value.__enter__.return_value = mock_session
         mock_query = _history_chain(mock_session, [])
 
-        response = client.get("/history?limit=10&offset=20")
+        response = client.get("/api/history?limit=10&offset=20")
         assert response.status_code == 200
         mock_query.offset.assert_called_once_with(20)
         mock_query.limit.assert_called_once_with(10)
 
 
 def test_get_history_limit_cap_enforced():
-    assert client.get("/history?limit=500").status_code == 422
-    assert client.get("/history?limit=0").status_code == 422
-    assert client.get("/history?offset=-1").status_code == 422
+    assert client.get("/api/history?limit=500").status_code == 422
+    assert client.get("/api/history?limit=0").status_code == 422
+    assert client.get("/api/history?offset=-1").status_code == 422
 
 
 def _mock_work_trope(name, *, relevance, justification):
@@ -192,7 +192,7 @@ def test_get_history_tropes_prefer_real_over_slugs(tropes, expected_names):
 
         _history_chain(mock_session, [mock_history])
 
-        response = client.get("/history")
+        response = client.get("/api/history")
         assert response.status_code == 200
         data = response.json()
         assert data[0]["tropes"] == expected_names
@@ -204,7 +204,7 @@ def _patch_with_mock_row(json_body):
         mock_session = MagicMock()
         mock_db.get_session.return_value.__enter__.return_value = mock_session
         _history_chain(mock_session, [])
-        return client.patch("/history/00000000-0000-4000-8000-00000000abcd", json=json_body)
+        return client.patch("/api/history/00000000-0000-4000-8000-00000000abcd", json=json_body)
 
 
 @pytest.mark.parametrize(

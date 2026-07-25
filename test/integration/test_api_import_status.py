@@ -21,7 +21,7 @@ def client(db_url, monkeypatch):
     manager = DatabaseManager(db_url)
     monkeypatch.setattr(imports_mod, "db_manager", manager)
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(router, prefix="/api")
     app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=DEFAULT_USER_ID, email=DEFAULT_USER_EMAIL)
     return TestClient(app), manager
 
@@ -67,7 +67,7 @@ def _seed_row(manager, status, minutes_old):
 def test_progress_is_derived_from_rows(client):
     c, manager = client
     job_id = _seed_job(manager, ["done", "done", "failed", "pending"])
-    body = c.get(f"/import/{job_id}").json()
+    body = c.get(f"/api/import/{job_id}").json()
     assert body["total_rows"] == 4
     assert body["counts"]["done"] == 2
     assert body["counts"]["failed"] == 1
@@ -80,10 +80,10 @@ def test_retry_re_enqueues_failed_rows(client, monkeypatch):
     job_id = _seed_job(manager, ["failed", "done"])
     enq = []
     monkeypatch.setattr(imports_mod, "enqueue_import_row", lambda rid: enq.append(rid) or True)
-    r = c.post(f"/import/{job_id}/retry")
+    r = c.post(f"/api/import/{job_id}/retry")
     assert r.status_code == 200
     assert len(enq) == 1  # only the failed row
-    body = c.get(f"/import/{job_id}").json()
+    body = c.get(f"/api/import/{job_id}").json()
     assert body["counts"].get("failed", 0) == 0
     assert body["counts"]["pending"] == 1
 
@@ -91,7 +91,7 @@ def test_retry_re_enqueues_failed_rows(client, monkeypatch):
 def test_report_lists_skipped_rows(client):
     c, manager = client
     job_id = _seed_job(manager, ["skipped", "done"])
-    body = c.get(f"/import/{job_id}").json()
+    body = c.get(f"/api/import/{job_id}").json()
     assert body["counts"]["skipped"] == 1
     assert any(item["status"] == "skipped" for item in body["report"])
 
@@ -114,7 +114,7 @@ def test_stalled_processing_rows_are_counted(client):
         )
         s.flush()
         job_id = job.id
-    body = c.get(f"/import/{job_id}").json()
+    body = c.get(f"/api/import/{job_id}").json()
     assert body["stalled"] == 1
     assert body["complete"] is False
 
@@ -125,7 +125,7 @@ def test_retry_re_enqueues_stranded_pending_rows(client, monkeypatch):
     job_id = _seed_row(manager, "pending", minutes_old=30)
     enq = []
     monkeypatch.setattr(imports_mod, "enqueue_import_row", lambda rid: enq.append(rid) or True)
-    r = c.post(f"/import/{job_id}/retry")
+    r = c.post(f"/api/import/{job_id}/retry")
     assert r.status_code == 200
     assert r.json()["retried"] == 1
     assert len(enq) == 1
@@ -137,7 +137,7 @@ def test_retry_ignores_fresh_pending_rows(client, monkeypatch):
     job_id = _seed_row(manager, "pending", minutes_old=0)
     enq = []
     monkeypatch.setattr(imports_mod, "enqueue_import_row", lambda rid: enq.append(rid) or True)
-    r = c.post(f"/import/{job_id}/retry")
+    r = c.post(f"/api/import/{job_id}/retry")
     assert r.json()["retried"] == 0
     assert enq == []
 
@@ -146,6 +146,6 @@ def test_stalled_counts_stale_pending_rows(client):
     """'stalled' = rows a retry will re-drive: stale processing + stale pending (#99)."""
     c, manager = client
     job_id = _seed_row(manager, "pending", minutes_old=30)
-    body = c.get(f"/import/{job_id}").json()
+    body = c.get(f"/api/import/{job_id}").json()
     assert body["stalled"] == 1
     assert body["complete"] is False

@@ -68,7 +68,7 @@ def test_availability_returns_links_and_empty_libby_when_service_returns_empty(c
         lambda db_manager, libs, items: {(lib["slug"], title, author): [] for lib in libs for title, author in items},
     )
 
-    resp = client.post("/availability", json={"work_ids": [str(work_id)]})
+    resp = client.post("/api/availability", json={"work_ids": [str(work_id)]})
     assert resp.status_code == 200
 
     body = resp.json()
@@ -96,7 +96,7 @@ def test_availability_returns_200_when_service_returns_none(client, db_url, monk
         lambda db_manager, libs, items: {(lib["slug"], title, author): None for lib in libs for title, author in items},
     )
 
-    resp = client.post("/availability", json={"work_ids": [str(work_id)]})
+    resp = client.post("/api/availability", json={"work_ids": [str(work_id)]})
     assert resp.status_code == 200
 
     body = resp.json()
@@ -109,7 +109,7 @@ def test_availability_returns_200_when_service_returns_none(client, db_url, monk
 
 def test_availability_empty_work_ids_returns_empty_dict(client, db_url):
     """Empty work_ids list returns an empty dict (fast path)."""
-    resp = client.post("/availability", json={"work_ids": []})
+    resp = client.post("/api/availability", json={"work_ids": []})
     assert resp.status_code == 200
     assert resp.json() == {}
 
@@ -122,6 +122,6 @@ def test_availability_skips_unknown_work_ids(client, db_url, monkeypatch):
         lambda db_manager, libs, items: {(lib["slug"], title, author): [] for lib in libs for title, author in items},
     )
     fake_id = str(uuid4())
-    resp = client.post("/availability", json={"work_ids": [fake_id]})
+    resp = client.post("/api/availability", json={"work_ids": [fake_id]})
     assert resp.status_code == 200
     assert resp.json() == {}

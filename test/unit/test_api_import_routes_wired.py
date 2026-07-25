@@ -16,7 +16,7 @@ def _all_paths(routes) -> set[str]:
 
 def test_import_routes_are_registered():
     paths = _all_paths(app.routes)
-    assert "/import/preview" in paths
-    assert "/import/commit" in paths
-    assert "/import/{job_id}" in paths
+    assert "/api/import/preview" in paths
+    assert "/api/import/commit" in paths
+    assert "/api/import/{job_id}" in paths
     assert "/internal/import-row/{row_id}" in paths

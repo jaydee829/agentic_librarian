@@ -29,7 +29,7 @@ def test_search_libraries_filters_directory_snapshot(client, monkeypatch):
     fake_results = [{"slug": "kcls", "name": "King County Library System"}]
     monkeypatch.setattr(directory, "search", lambda q, **kw: fake_results)
 
-    resp = client.get("/libraries/search?q=king")
+    resp = client.get("/api/libraries/search?q=king")
     assert resp.status_code == 200
     assert resp.json() == fake_results
 
@@ -42,11 +42,11 @@ def test_put_then_get_libraries_round_trips_in_order(client, db_url):
             {"slug": "nypl", "name": "New York Public Library"},
         ]
     }
-    put_resp = client.put("/me/libraries", json=payload)
+    put_resp = client.put("/api/me/libraries", json=payload)
     assert put_resp.status_code == 200
     assert put_resp.json() == payload
 
-    get_resp = client.get("/me/libraries")
+    get_resp = client.get("/api/me/libraries")
     assert get_resp.status_code == 200
     assert get_resp.json() == payload
 
@@ -54,21 +54,21 @@ def test_put_then_get_libraries_round_trips_in_order(client, db_url):
 def test_put_libraries_replaces_previous_set(client, db_url):
     """A second PUT fully replaces the previous set (no stale rows remain)."""
     client.put(
-        "/me/libraries",
+        "/api/me/libraries",
         json={"libraries": [{"slug": "old-lib", "name": "Old Library"}]},
     )
 
     new_payload = {"libraries": [{"slug": "new-lib", "name": "New Library"}]}
-    client.put("/me/libraries", json=new_payload)
+    client.put("/api/me/libraries", json=new_payload)
 
-    get_resp = client.get("/me/libraries")
+    get_resp = client.get("/api/me/libraries")
     assert get_resp.status_code == 200
     assert get_resp.json() == new_payload
 
 
 def test_get_libraries_empty_when_none_saved(client, db_url):
     """GET /me/libraries returns an empty list when the user has no saved libraries."""
-    resp = client.get("/me/libraries")
+    resp = client.get("/api/me/libraries")
     assert resp.status_code == 200
     assert resp.json() == {"libraries": []}
 
@@ -81,5 +81,5 @@ def test_put_libraries_422_on_duplicate_slugs(client):
             {"slug": "seattle", "name": "Seattle Public Library (duplicate)"},
         ]
     }
-    resp = client.put("/me/libraries", json=payload)
+    resp = client.put("/api/me/libraries", json=payload)
     assert resp.status_code == 422
