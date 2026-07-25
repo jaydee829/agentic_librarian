@@ -75,3 +75,38 @@ that every single-pass review missed.
   `uvx ruff format <files>` — CI pre-commit enforces format; check alone is not enough.
 - Full unit suite before each commit; focused tests while iterating.
 - No `[skip ci]` anywhere in commit messages (see bugs.md 2026-06-17 / GH #90).
+
+## Known local-only test failures — DO NOT stash-verify these
+
+A fixed, small set of unit tests **fail on the local host and pass in cloud CI**. They are
+env-dependent, not regressions. When you see ONLY these in a local run, name them and move
+on — **do not `git stash` + rerun to "confirm they're pre-existing"** (that dance is what
+this section exists to end). Refinement of guidance #9: stash-verify *unexpected* failures;
+these are the expected set. Anything outside this list is a real failure to investigate.
+
+**Cause A — live external API / network (marker: `api_dependent`).** Already tagged; they
+require a real Gemini/Hardcover key or a live network call, so they error offline. `conftest`
+only auto-skips `db_integration`, so `api_dependent` is **not** deselected on a normal run —
+that is why they still fail rather than skip.
+- `test/unit/test_agent_runtime.py::test_live_conversation_runs`
+- `test/unit/test_agent_runtime.py::test_explorer_discovers_real_books`
+- `test/unit/test_metadata_scout.py::test_enrich_with_real_scouts_produces_styles_and_tropes`
+- `test/unit/test_metadata_scout.py::test_hardcover_live_returns_metadata_for_known_title`
+- `test/unit/test_metadata_scout.py::test_claude_grounded_scouts_produce_styles_and_tropes`
+  (also needs an authenticated `claude` CLI)
+
+**Cause B — optional `claude` extra not installed (`claude_agent_sdk` MISSING locally).**
+These import `agentic_librarian.agents.backends.claude` WITHOUT a `pytest.importorskip`
+guard, so they ERROR instead of skipping (contrast `test_claude_backend.py`,
+`test_claude_tools.py`, `test_write_authorization.py`, which guard correctly):
+- `test/unit/test_usage_recording_backends.py::test_claude_conversation_records_usage`
+- `test/unit/test_usage_recording_backends.py::test_claude_loop_thread_sees_the_user_context`
+
+**To run the suite clean locally:** `-m "not api_dependent"` deselects Cause A;
+`pip install -e '.[claude]'` (installs `claude_agent_sdk`) fixes Cause B. CI runs the full
+set with keys + the extra, so CI remains the gate for all of the above.
+
+**Durable fix (open):** wire `api_dependent`/`live` into `conftest.py`'s
+`pytest_collection_modifyitems` to auto-skip unless an opt-in env var is set (mirroring the
+`db_integration` pattern), and add `pytest.importorskip("claude_agent_sdk")` to the two
+unguarded Cause-B tests — then the local suite goes green and this whole section becomes moot.
