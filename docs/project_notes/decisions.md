@@ -1238,12 +1238,14 @@ This file documents key architectural decisions, their context, and trade-offs.
   in CI (with keys + the extra); the fix is skip-when-unavailable, not removal.
 
 **Consequences:**
-- CI remains the gate for all of these (it has the keys and installs the extra); a green
-  local `test/unit` run is NOT expected until the durable fix lands.
-- Durable fix (OPEN, deferred to a small standalone PR after #151): (1) wire
-  `api_dependent`/`live` into `conftest.py::pytest_collection_modifyitems` to auto-skip
-  unless an opt-in env var is set — mirroring the existing `db_integration` deselection so
-  the marker's stated intent finally takes effect; (2) add `importorskip("claude_agent_sdk")`
-  to the two unguarded Cause-B tests. Then the local suite goes green and this section (and
-  the CLAUDE.md subsection) become moot.
-- `db_integration` deselection is unaffected — that path already works via the same hook.
+- CI remains the gate for all of these (it has the keys and installs the extra).
+- Durable fix (DONE, same #151 branch): rather than the originally-sketched conftest hook,
+  the simpler and more consistent fix was to put CI's exact filter in pytest `addopts`
+  (`-m "not api_dependent and not slow and not live"`) so a bare local `pytest` matches the
+  CI selection and is green, plus `importorskip("claude_agent_sdk")` on the two unguarded
+  Cause-B tests. Chosen over the conftest `pytest_collection_modifyitems` approach because CI
+  already uses this exact `-m` string on the CLI (which overrides `addopts`), so local now
+  simply mirrors CI with one line and zero coverage risk. Result: `test/unit` = 835 passed,
+  5 skipped, 5 deselected, 0 failed. CLAUDE.md's "stash-verify" subsection is now retired.
+- `db_integration` deselection is unaffected — that path still works via the conftest hook
+  (it is orthogonal to the `-m` marker filter).
