@@ -91,3 +91,16 @@ def test_usage_rows_reference_the_conversation(client, db_url, monkeypatch):
     with DatabaseManager(db_url).get_session() as s:
         row = s.query(Usage).filter(Usage.conversation_id == cid).first()
         assert row is not None  # FK held: the conversation existed when usage was written
+
+
+def test_conversations_current_payload_is_capped(client, monkeypatch):
+    # #113: the endpoint returns the same capped window the mesh seeds — one choke point.
+    monkeypatch.setenv("CHAT_HISTORY_SEED_LIMIT", "3")
+    ctx = transcript.get_or_create_active_conversation()
+    for i in range(1, 6):
+        transcript.append_message(ctx.conversation_id, "user", f"m{i}")
+    resp = client.get("/api/conversations/current")
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+    assert len(messages) == 3
+    assert [m["content"] for m in messages] == ["m3", "m4", "m5"]
