@@ -89,7 +89,7 @@ describe('addBook', () => {
 
     expect(result).toEqual(body)
     const [path, init] = fetchMock.mock.calls[0]
-    expect(path).toBe('/books')
+    expect(path).toBe('/api/books')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body)).toMatchObject({ title: 'Project Hail Mary', author: 'Andy Weir' })
   })
