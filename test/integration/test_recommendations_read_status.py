@@ -1,4 +1,4 @@
-"""/recommendations payload carries read_status/last_read/rating (A3)."""
+"""/api/recommendations payload carries read_status/last_read/rating (A3)."""
 
 from datetime import UTC, date, datetime
 
@@ -66,7 +66,7 @@ def recs_client(db_url):
 
 
 def test_recommendations_payload_carries_read_status(recs_client):
-    resp = recs_client.get("/recommendations")
+    resp = recs_client.get("/api/recommendations")
     assert resp.status_code == 200
     by_title = {r["title"]: r for r in resp.json()}
 

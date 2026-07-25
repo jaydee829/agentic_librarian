@@ -38,16 +38,16 @@ def client(db_url, monkeypatch):
 
 
 def test_current_conversation_then_chat_then_resume(client):
-    current = client.get("/conversations/current").json()
+    current = client.get("/api/conversations/current").json()
     assert current["messages"] == []
     cid = current["id"]
 
-    with client.stream("POST", "/chat", json={"message": "hi"}) as r:
+    with client.stream("POST", "/api/chat", json={"message": "hi"}) as r:
         body = "".join(r.iter_text())
     assert "echo:hi" in body
     assert body.rstrip().endswith("event: done\ndata: {}")
 
-    resumed = client.get("/conversations/current").json()
+    resumed = client.get("/api/conversations/current").json()
     assert resumed["id"] == cid
     assert resumed["messages"] == [
         {"role": "user", "content": "hi"},
@@ -56,8 +56,8 @@ def test_current_conversation_then_chat_then_resume(client):
 
 
 def test_new_conversation_starts_empty(client):
-    current = client.get("/conversations/current").json()
-    fresh = client.post("/conversations").json()
+    current = client.get("/api/conversations/current").json()
+    fresh = client.post("/api/conversations").json()
     assert fresh["messages"] == []
     assert fresh["id"] != current["id"]  # New chat is a distinct conversation
 
@@ -69,7 +69,7 @@ def test_usage_rows_reference_the_conversation(client, db_url, monkeypatch):
     from agentic_librarian.db.models import Usage
     from agentic_librarian.db.session import DatabaseManager
 
-    current = client.get("/conversations/current").json()
+    current = client.get("/api/conversations/current").json()
     cid = UUID(current["id"])
 
     class _UsingConv:
@@ -85,7 +85,7 @@ def test_usage_rows_reference_the_conversation(client, db_url, monkeypatch):
 
     monkeypatch.setattr(api_main, "_open_conversation", _using_open)
 
-    with client.stream("POST", "/chat", json={"message": "go"}) as r:
+    with client.stream("POST", "/api/chat", json={"message": "go"}) as r:
         "".join(r.iter_text())
 
     with DatabaseManager(db_url).get_session() as s:

@@ -75,3 +75,22 @@ that every single-pass review missed.
   `uvx ruff format <files>` — CI pre-commit enforces format; check alone is not enough.
 - Full unit suite before each commit; focused tests while iterating.
 - No `[skip ci]` anywhere in commit messages (see bugs.md 2026-06-17 / GH #90).
+
+## Local test suite is green by default — no stash-verify dance (ADR-063)
+
+`pytest`'s `addopts` now carries CI's exact filter — `-m "not api_dependent and not slow and
+not live"` — so a bare local `.venv/Scripts/python -m pytest test/unit` runs the same
+selection CI gates on and comes back **green** (live/key-dependent tests deselected; the two
+`claude_agent_sdk` tests `importorskip`-skip when the optional `claude` extra isn't installed).
+There is nothing pre-existing to filter out by eye, so **any failure is a real failure** —
+investigate it, don't `git stash` to "confirm it's baseline" (that dance is retired). This
+supersedes the earlier reading of guidance #9 for the unit suite.
+
+Coverage is not lost. The two `claude_agent_sdk` tests DO run in CI — it installs
+`.[dev,claude]`, so the `importorskip` skips only locally. The `api_dependent`/`live` tests
+run in NEITHER these CI jobs NOR a bare local run — deploy.yml / lint.yml pass the same `-m`
+string on the CLI, so they are deselected there too; they execute only in operator/live
+contexts (`live` = "operator-run, never CI"). To run them yourself: override the marker
+filter, e.g. `-m api_dependent` (needs real Gemini/Hardcover keys, and an authenticated
+`claude` CLI for `test_claude_grounded_scouts_produce_styles_and_tropes`), plus
+`pip install -e '.[claude]'` for the `claude_agent_sdk` tests.

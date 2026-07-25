@@ -128,7 +128,7 @@ def test_analysis_aggregates_the_users_reading(client, db_url):
         rating=3,
     )
 
-    body = client.get("/analysis").json()
+    body = client.get("/api/analysis").json()
 
     snap = body["snapshot"]
     assert snap["total_read"] == 2
@@ -143,7 +143,7 @@ def test_analysis_aggregates_the_users_reading(client, db_url):
 
 
 def test_analysis_empty_for_user_with_no_reading(client):
-    body = client.get("/analysis").json()
+    body = client.get("/api/analysis").json()
     assert body["snapshot"] == {
         "total_read": 0,
         "read_this_year": 0,
@@ -174,7 +174,7 @@ def test_analysis_excludes_other_users(client, db_url):
         tropes=["haunting"],
     )
 
-    body = client.get("/analysis").json()
+    body = client.get("/api/analysis").json()
     assert body["snapshot"]["total_read"] == 0  # other user's reading is invisible
 
 
@@ -194,7 +194,7 @@ def test_analysis_includes_style_radar_and_cloud_keys(client, db_url):
             "perspective": ("third person omniscient", "Work"),
         },
     )
-    body = client.get("/analysis").json()
+    body = client.get("/api/analysis").json()
 
     assert set(body["style_radar"].keys()) == {
         "pace",
@@ -211,6 +211,6 @@ def test_analysis_includes_style_radar_and_cloud_keys(client, db_url):
 
 
 def test_analysis_empty_user_has_empty_style_fields(client):
-    body = client.get("/analysis").json()
+    body = client.get("/api/analysis").json()
     assert body["style_cloud"] == []
     assert all(v is None for v in body["style_radar"].values())

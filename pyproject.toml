@@ -145,6 +145,11 @@ pythonpath = [
 python_files = [
     "test_*.py"
 ]
+# Local `pytest` matches the CI gate (deploy.yml / lint.yml run the same -m filter):
+# live/key-dependent and slow tests are deselected by default so a bare local run is green
+# and there is nothing to stash-verify (ADR-063). CI passes its own identical -m on the CLI
+# (which overrides this); to run the live tests locally, override with e.g. `-m api_dependent`.
+addopts = "-m 'not api_dependent and not slow and not live'"
 markers = [
     "api_dependent: tests that require an external API key and should be skipped in pre-commit",
     "slow: tests that are slow to run and should be skipped for fast feedback loops",

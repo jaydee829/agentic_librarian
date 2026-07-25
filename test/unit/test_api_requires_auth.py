@@ -16,8 +16,8 @@ def test_health_db_requires_auth():
 
 
 def test_history_requires_auth():
-    assert client.get("/history").status_code == 401
+    assert client.get("/api/history").status_code == 401
 
 
 def test_works_requires_auth():
-    assert client.get("/works").status_code == 401
+    assert client.get("/api/works").status_code == 401

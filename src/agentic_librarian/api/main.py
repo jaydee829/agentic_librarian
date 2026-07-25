@@ -6,7 +6,7 @@ import os
 from datetime import date
 from uuid import UUID
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, text
@@ -106,14 +106,21 @@ async def lifespan(app: FastAPI):
 # auto-docs so the full API schema isn't exposed unauthenticated. (GET /docs etc. now fall
 # through to the SPA catch-all, which is harmless.)
 app = FastAPI(title="Agentic Librarian API", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+# User-facing data routes live under /api/* so they can never collide with an SPA client
+# route (#151, follow-up to #150). The prefix lives in exactly one place.
+api_router = APIRouter(prefix="/api")
+api_router.include_router(recommendations_router)
+api_router.include_router(analysis_router)
+api_router.include_router(availability_router)
+api_router.include_router(books_router)
+api_router.include_router(imports_router)
+api_router.include_router(libraries_router)
+
+# Machine-only routers stay at root — never SPA-route collisions, and moving them would
+# break fixed contracts (Firebase /__/auth/*) or Cloud Tasks target URLs (/internal/*).
 app.include_router(firebase_auth_proxy_router)
-app.include_router(recommendations_router)
-app.include_router(analysis_router)
-app.include_router(availability_router)
-app.include_router(books_router)
-app.include_router(imports_router)
 app.include_router(internal_router)
-app.include_router(libraries_router)
 
 
 @app.get("/health")
@@ -172,7 +179,7 @@ def _history_options():
     ]
 
 
-@app.get("/history")
+@api_router.get("/history")
 def get_history(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -241,7 +248,7 @@ class HistoryUpdate(BaseModel):
         return normalized
 
 
-@app.delete("/history/{entry_id}")
+@api_router.delete("/history/{entry_id}")
 def delete_history(entry_id: UUID, user: AuthenticatedUser = Depends(get_current_user)):  # noqa: B008
     with db_manager.get_session() as session:
         row = (
@@ -256,7 +263,7 @@ def delete_history(entry_id: UUID, user: AuthenticatedUser = Depends(get_current
     return {"id": str(entry_id), "deleted": True}
 
 
-@app.patch("/history/{entry_id}")
+@api_router.patch("/history/{entry_id}")
 def update_history(
     entry_id: UUID,
     req: HistoryUpdate,
@@ -373,7 +380,7 @@ def update_history(
     return payload
 
 
-@app.get("/works")
+@api_router.get("/works")
 def get_works(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -450,21 +457,21 @@ class _SyncOpener:
             self._conv.close()
 
 
-@app.get("/conversations/current")
+@api_router.get("/conversations/current")
 def get_current_conversation(user: AuthenticatedUser = Depends(get_current_user)):  # noqa: B008
     with as_user(user.id):
         ctx = transcript.get_or_create_active_conversation()
     return {"id": str(ctx.conversation_id), "messages": ctx.history}
 
 
-@app.post("/conversations")
+@api_router.post("/conversations")
 def new_conversation(user: AuthenticatedUser = Depends(get_current_user)):  # noqa: B008
     with as_user(user.id):
         ctx = transcript.start_new_conversation()
     return {"id": str(ctx.conversation_id), "messages": ctx.history}
 
 
-@app.post("/chat")
+@api_router.post("/chat")
 def chat(user: AuthenticatedUser = Depends(get_current_user), message: str = Body(..., embed=True)):  # noqa: B008
     with as_user(user.id):
         ctx = transcript.get_or_create_active_conversation()
@@ -478,6 +485,11 @@ def chat(user: AuthenticatedUser = Depends(get_current_user), message: str = Bod
         ),
         media_type="text/event-stream",
     )
+
+
+# Registered after all @api_router routes are declared and before the SPA catch-all so
+# every /api/* route takes precedence over the greedy /{full_path:path} fallback.
+app.include_router(api_router)
 
 
 # ---------------------------------------------------------------------------
@@ -503,28 +515,13 @@ def _spa_index() -> FileResponse:
     return FileResponse(os.path.join(_spa_dir(), "index.html"), headers={"Cache-Control": _SHELL_CACHE})
 
 
-# Refresh-on-a-tab fix (2026-07-19): /history, /recommendations, /analysis are BOTH SPA
-# client routes and authed API GETs, and API routes win the router — so a browser refresh
-# on a tab rendered {"detail":"Missing bearer token."} as the page. A document NAVIGATION
-# is distinguished by its Accept header (browsers send text/html first; the SPA's fetch()
-# calls send */*): GET navigations to client routes serve the shell, fetches keep reaching
-# the API. The same middleware stamps Cache-Control: no-store on every response that set
-# no policy of its own (i.e. all API JSON) — private payloads must never be cacheable
-# (a heuristically-cached authed /history body could previously render as a page).
-_SPA_CLIENT_ROUTES = ("history", "recommendations", "analysis", "add", "import", "settings")
-
-
+# Private authed API JSON must never sit in a browser/proxy cache. The SPA shell and
+# static assets set their own Cache-Control (below), so this only stamps responses that
+# declared none — i.e. all API JSON. (The #150 Accept-sniffing navigation rewrite is gone:
+# with data routes under /api/*, a bare /history is not an API route and reaches the SPA
+# catch-all naturally — #151.)
 @app.middleware("http")
-async def _spa_navigation_and_api_cache(request: Request, call_next):
-    if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-        first_segment = request.url.path.strip("/").split("/", 1)[0]
-        if first_segment in _SPA_CLIENT_ROUTES:
-            # Internal rewrite to the shell route rather than returning a FileResponse
-            # from the middleware itself (BaseHTTPMiddleware + a directly-returned file
-            # response is a known footgun: fd lifetime, skipped inner middleware). The
-            # router then serves the shell exactly like a "/" request.
-            request.scope["path"] = "/"
-            request.scope["raw_path"] = b"/"
+async def _api_no_store_cache(request: Request, call_next):
     response = await call_next(request)
     if "cache-control" not in response.headers:
         response.headers["cache-control"] = "no-store"

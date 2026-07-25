@@ -7,6 +7,8 @@ context propagation through run_coroutine_threadsafe)."""
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from agentic_librarian.core.user_context import DEFAULT_USER_ID, as_user, get_required_user_id
 
 
@@ -43,6 +45,7 @@ def test_adk_conversation_records_usage(monkeypatch):
 
 
 def test_claude_conversation_records_usage(monkeypatch):
+    pytest.importorskip("claude_agent_sdk")  # the `claude` optional extra; skip if not installed
     calls = []
     monkeypatch.setattr("agentic_librarian.agents.backends.claude.record_llm_call", lambda **kw: calls.append(kw))
 
@@ -89,6 +92,7 @@ def test_claude_loop_thread_sees_the_user_context():
     The ambient context during the send is a DIFFERENT uuid so that if the
     explicit capture is removed the assertion fails (seen gets the wrong uuid, not
     DEFAULT_USER_ID)."""
+    pytest.importorskip("claude_agent_sdk")  # the `claude` optional extra; skip if not installed
     seen = []
 
     class FakeClient:

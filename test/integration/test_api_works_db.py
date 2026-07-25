@@ -1,4 +1,4 @@
-"""GET /works against the real schema in the isolated test DB (ADR-034)."""
+"""GET /api/works against the real schema in the isolated test DB (ADR-034)."""
 
 from unittest.mock import patch
 
@@ -42,7 +42,7 @@ def test_get_works_end_to_end(db_url):
     # db_integration test, so leftover rows can't poison runs.
     with patch("agentic_librarian.api.main.db_manager", manager):
         client = TestClient(app)
-        data = client.get("/works", params={"limit": 200}).json()
+        data = client.get("/api/works", params={"limit": 200}).json()
         by_id = {entry["id"]: entry for entry in data}
 
         assert created["a"] in by_id and created["b"] in by_id, f"seeded works missing from {len(data)}-row response"
@@ -60,4 +60,4 @@ def test_get_works_end_to_end(db_url):
         assert ids_in_order.index(created["a"]) < ids_in_order.index(created["b"])
 
         # Pagination: limit=1 returns exactly one row
-        assert len(client.get("/works", params={"limit": 1}).json()) == 1
+        assert len(client.get("/api/works", params={"limit": 1}).json()) == 1

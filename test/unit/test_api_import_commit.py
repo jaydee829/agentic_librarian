@@ -10,7 +10,7 @@ from agentic_librarian.api.imports import router
 from agentic_librarian.core.user_context import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
 
 app = FastAPI()
-app.include_router(router)
+app.include_router(router, prefix="/api")
 app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(id=DEFAULT_USER_ID, email=DEFAULT_USER_EMAIL)
 client = TestClient(app)
 
@@ -72,7 +72,7 @@ def _commit(monkeypatch, *, to_read=True):
     enq = []
     monkeypatch.setattr(imports_mod, "enqueue_import_row", lambda row_id: enq.append(row_id) or True)
     r = client.post(
-        "/import/commit",
+        "/api/import/commit",
         files={"file": ("export.csv", io.BytesIO(CSV.encode()), "text/csv")},
         data={
             "mapping": json.dumps(_GOODREADS_MAP),
@@ -104,7 +104,7 @@ def test_commit_422_when_required_mapping_missing(monkeypatch):
     monkeypatch.setattr(imports_mod, "db_manager", _fake_manager(_Recorder()))
     bad = dict(_GOODREADS_MAP, date_completed=None)
     r = client.post(
-        "/import/commit",
+        "/api/import/commit",
         files={"file": ("export.csv", io.BytesIO(CSV.encode()), "text/csv")},
         data={"mapping": json.dumps(bad), "import_to_read": "true", "import_currently_reading": "true"},
     )

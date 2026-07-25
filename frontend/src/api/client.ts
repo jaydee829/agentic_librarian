@@ -1,6 +1,11 @@
 import { getIdToken } from '../auth/firebase'
 import type { ActivityStep } from './activityLabels'
 
+// All user-facing API routes are served under /api/* (#151) so they can never collide
+// with an SPA client route. This is the single place the prefix is applied — every call
+// site keeps its bare literal path (e.g. '/history').
+const API_PREFIX = '/api'
+
 export class ApiError extends Error {
   // Explicit fields, not constructor parameter properties: the build runs tsc with
   // erasableSyntaxOnly, which rejects TS-only runtime syntax (TS1294).
@@ -118,7 +123,7 @@ async function authedFetchRaw(path: string, init: RequestInit = {}): Promise<Res
   const token = await getIdToken()
   const headers = new Headers(init.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  return fetch(path, { ...init, headers })
+  return fetch(`${API_PREFIX}${path}`, { ...init, headers })
 }
 
 async function getJson<T>(path: string): Promise<T> {

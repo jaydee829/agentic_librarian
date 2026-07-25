@@ -1208,3 +1208,44 @@ This file documents key architectural decisions, their context, and trade-offs.
 - The client-side exact-id resolution in the "✓ I read this" prefill flow is retained as a
   belt-and-suspenders for fast-pass twin-work misses; double-resolution is idempotent.
 - Historical 'Dismissed' rows are not reclassified.
+
+### ADR-063: Known local-only test failures are a named set; CI is their gate (2026-07-25)
+
+**Context:**
+- A fixed ~7-test set fails on the local host but passes in cloud CI, and reviewers kept
+  burning time `git stash`-ing + rerunning to "confirm they're pre-existing" (guidance #9).
+- Two distinct causes were conflated as "some env failures":
+  (A) live external API/network tests, and (B) an optional dependency missing locally.
+
+**Decision:**
+- Treat these as a NAMED, enumerated set (listed in CLAUDE.md "Known local-only test
+  failures"), not a vague "~5 failures". When ONLY this set fails locally, name it and
+  proceed — do NOT stash-verify. Stash-verification is reserved for UNEXPECTED failures.
+- Cause A is the `api_dependent` pytest marker (already defined in `pyproject.toml`,
+  intent: "skipped in pre-commit"): 5 tests in `test_agent_runtime.py` +
+  `test_metadata_scout.py`. The marker is the correct differentiator; `-m "not api_dependent"`
+  deselects them locally today.
+- Cause B is the optional `claude` extra (`claude_agent_sdk`) not installed locally: 2 tests
+  in `test_usage_recording_backends.py` that import `agents.backends.claude` WITHOUT the
+  `pytest.importorskip("claude_agent_sdk")` guard their siblings use, so they ERROR not SKIP.
+
+**Alternatives Considered:**
+- Keep documenting a manual "stash to verify" dance -> rejected: it is the cost this ADR
+  removes; a named set + CI-as-gate is cheaper and less error-prone.
+- Add a brand-new marker for the live tests -> rejected: `api_dependent` already exists and
+  already tags all 5; the gap is wiring, not taxonomy.
+- Delete/disable the live + claude tests -> rejected: they are real coverage that must run
+  in CI (with keys + the extra); the fix is skip-when-unavailable, not removal.
+
+**Consequences:**
+- CI remains the gate for all of these (it has the keys and installs the extra).
+- Durable fix (DONE, same #151 branch): rather than the originally-sketched conftest hook,
+  the simpler and more consistent fix was to put CI's exact filter in pytest `addopts`
+  (`-m "not api_dependent and not slow and not live"`) so a bare local `pytest` matches the
+  CI selection and is green, plus `importorskip("claude_agent_sdk")` on the two unguarded
+  Cause-B tests. Chosen over the conftest `pytest_collection_modifyitems` approach because CI
+  already uses this exact `-m` string on the CLI (which overrides `addopts`), so local now
+  simply mirrors CI with one line and zero coverage risk. Result: `test/unit` = 835 passed,
+  5 skipped, 5 deselected, 0 failed. CLAUDE.md's "stash-verify" subsection is now retired.
+- `db_integration` deselection is unaffected — that path still works via the conftest hook
+  (it is orthogonal to the `-m` marker filter).

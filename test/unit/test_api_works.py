@@ -58,7 +58,7 @@ def test_get_works_empty():
         mock_db.get_session.return_value.__enter__.return_value = mock_session
         _mock_chain(mock_session, [])
 
-        response = client.get("/works")
+        response = client.get("/api/works")
         assert response.status_code == 200
         assert response.json() == []
 
@@ -70,7 +70,7 @@ def test_get_works_shape():
         work = _mock_work()
         _mock_chain(mock_session, [work])
 
-        response = client.get("/works")
+        response = client.get("/api/works")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 1
@@ -94,7 +94,7 @@ def test_get_works_null_arrays_become_empty_lists():
         work.moods = None
         _mock_chain(mock_session, [work])
 
-        response = client.get("/works")
+        response = client.get("/api/works")
         entry = response.json()[0]
         assert entry["genres"] == []
         assert entry["moods"] == []
@@ -107,7 +107,7 @@ def test_get_works_pagination_params_forwarded():
         mock_db.get_session.return_value.__enter__.return_value = mock_session
         mock_query = _mock_chain(mock_session, [])
 
-        response = client.get("/works?limit=10&offset=20")
+        response = client.get("/api/works?limit=10&offset=20")
         assert response.status_code == 200
         mock_query.offset.assert_called_once_with(20)
         mock_query.limit.assert_called_once_with(10)
@@ -115,9 +115,9 @@ def test_get_works_pagination_params_forwarded():
 
 def test_get_works_limit_cap_enforced():
     # limit above 200 and below 1, and negative offset, are rejected by validation
-    assert client.get("/works?limit=500").status_code == 422
-    assert client.get("/works?limit=0").status_code == 422
-    assert client.get("/works?offset=-1").status_code == 422
+    assert client.get("/api/works?limit=500").status_code == 422
+    assert client.get("/api/works?limit=0").status_code == 422
+    assert client.get("/api/works?offset=-1").status_code == 422
 
 
 def _mock_work_trope(name, *, relevance, justification):
@@ -141,7 +141,7 @@ def test_get_works_tropes_ordered_justified_first():
         ]
         _mock_chain(mock_session, [work])
 
-        response = client.get("/works")
+        response = client.get("/api/works")
         assert response.status_code == 200
         entry = response.json()[0]
         assert entry["tropes"] == ["Slow Burn", "Found Family", "Dark", "Fantasy"]

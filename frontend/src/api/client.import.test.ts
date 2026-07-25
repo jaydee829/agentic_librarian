@@ -20,7 +20,7 @@ describe('import client', () => {
     const res = await previewImport(file)
     expect(res.source).toBe('goodreads')
     const [path, init] = f.mock.calls[0]
-    expect(path).toBe('/import/preview')
+    expect(path).toBe('/api/import/preview')
     expect((init as RequestInit).method).toBe('POST')
     expect((init as RequestInit).body).toBeInstanceOf(FormData)
   })
@@ -44,6 +44,6 @@ describe('import client', () => {
   it('retryImport posts to the retry route', async () => {
     const f = mockFetch({ retried: 2 })
     await retryImport('j1')
-    expect(f.mock.calls[0][0]).toBe('/import/j1/retry')
+    expect(f.mock.calls[0][0]).toBe('/api/import/j1/retry')
   })
 })

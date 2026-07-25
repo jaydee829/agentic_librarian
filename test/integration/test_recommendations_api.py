@@ -48,7 +48,7 @@ def test_lists_only_active_suggestions_for_the_user(client, db_url):
     )
     _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Old Pick", author="X", status="Dismissed")
 
-    body = client.get("/recommendations").json()
+    body = client.get("/api/recommendations").json()
 
     assert [r["title"] for r in body] == ["Dune"]  # Dismissed one excluded
     row = body[0]
@@ -68,7 +68,7 @@ def test_does_not_leak_another_users_suggestions(client, db_url):
         s.flush()
     _seed_suggestion(manager, user_id=other_id, title="Secret", author="Nobody")
 
-    body = client.get("/recommendations").json()
+    body = client.get("/api/recommendations").json()
 
     assert body == []  # the default user sees none of the other user's suggestions
 
@@ -77,18 +77,18 @@ def test_dismiss_marks_status_and_removes_from_list(client, db_url):
     manager = DatabaseManager(db_url)
     sid, _ = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Meh", author="Z")
 
-    resp = client.post(f"/recommendations/{sid}/status", json={"status": "Dismissed"})
+    resp = client.post(f"/api/recommendations/{sid}/status", json={"status": "Dismissed"})
     assert resp.status_code == 200
     assert resp.json() == {"id": str(sid), "status": "Dismissed"}
 
-    assert client.get("/recommendations").json() == []  # no longer active
+    assert client.get("/api/recommendations").json() == []  # no longer active
 
 
 def test_rejects_unknown_status(client, db_url):
     manager = DatabaseManager(db_url)
     sid, _ = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Meh", author="Z")
 
-    resp = client.post(f"/recommendations/{sid}/status", json={"status": "Banished"})
+    resp = client.post(f"/api/recommendations/{sid}/status", json={"status": "Banished"})
     assert resp.status_code == 422
 
 
@@ -100,7 +100,7 @@ def test_cannot_dismiss_another_users_suggestion(client, db_url):
         s.flush()
     sid, _ = _seed_suggestion(manager, user_id=other_id, title="Secret", author="Nobody")
 
-    resp = client.post(f"/recommendations/{sid}/status", json={"status": "Dismissed"})
+    resp = client.post(f"/api/recommendations/{sid}/status", json={"status": "Dismissed"})
     assert resp.status_code == 404  # scoping: not the caller's suggestion
 
 
@@ -108,10 +108,10 @@ def test_mark_read_removes_from_active_list(client, db_url):
     manager = DatabaseManager(db_url)
     sid, _ = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Read It", author="Q")
 
-    resp = client.post(f"/recommendations/{sid}/status", json={"status": "Read"})
+    resp = client.post(f"/api/recommendations/{sid}/status", json={"status": "Read"})
     assert resp.status_code == 200
     assert resp.json() == {"id": str(sid), "status": "Read"}
-    assert client.get("/recommendations").json() == []  # no longer "Suggested"
+    assert client.get("/api/recommendations").json() == []  # no longer "Suggested"
 
 
 def test_genres_defaults_to_empty_list_when_not_set(client, db_url):
@@ -119,7 +119,7 @@ def test_genres_defaults_to_empty_list_when_not_set(client, db_url):
     manager = DatabaseManager(db_url)
     _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Genreless", author="Anon")
 
-    body = client.get("/recommendations").json()
+    body = client.get("/api/recommendations").json()
 
     assert len(body) == 1
     assert body[0]["genres"] == []
@@ -130,7 +130,7 @@ def test_status_endpoint_accepts_each_allowed_value(client, db_url, status):
     manager = DatabaseManager(db_url)
     sug_id, _work_id = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title=f"Allowed {status}", author="A. Uthor")
 
-    resp = client.post(f"/recommendations/{sug_id}/status", json={"status": status})
+    resp = client.post(f"/api/recommendations/{sug_id}/status", json={"status": status})
 
     assert resp.status_code == 200
     assert resp.json() == {"id": str(sug_id), "status": status}
@@ -145,7 +145,7 @@ def test_status_endpoint_rejects_bad_vocab(client, db_url, bad):
     manager = DatabaseManager(db_url)
     sug_id, _work_id = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title=f"Bad {bad!r}", author="A. Uthor")
 
-    resp = client.post(f"/recommendations/{sug_id}/status", json={"status": bad})
+    resp = client.post(f"/api/recommendations/{sug_id}/status", json={"status": bad})
 
     assert resp.status_code == 422
     with manager.get_session() as s:
@@ -158,10 +158,10 @@ def test_remove_marks_status_and_removes_from_list(client, db_url):
     manager = DatabaseManager(db_url)
     sug_id, _work_id = _seed_suggestion(manager, user_id=DEFAULT_USER_ID, title="Neutral Exit", author="A. Uthor")
 
-    resp = client.post(f"/recommendations/{sug_id}/status", json={"status": "Removed"})
+    resp = client.post(f"/api/recommendations/{sug_id}/status", json={"status": "Removed"})
     assert resp.status_code == 200
 
-    listed = client.get("/recommendations").json()
+    listed = client.get("/api/recommendations").json()
     assert all(item["id"] != str(sug_id) for item in listed)
     with manager.get_session() as s:
         assert s.get(Suggestions, sug_id).status == "Removed"  # row kept, not deleted
