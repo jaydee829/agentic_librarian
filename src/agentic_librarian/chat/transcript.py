@@ -4,6 +4,7 @@ the context (get_required_user_id) — never a parameter (ADR-048)."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -31,16 +32,36 @@ class TurnContext:
     history: list[dict]
 
 
+_DEFAULT_SEED_LIMIT = 30
+
+
+def _seed_limit() -> int:
+    """#113: how many recent messages to seed per turn (and return from
+    /conversations/current). Env-tunable without a deploy; read per call so tests and
+    prod tuning don't depend on import order. Invalid or non-positive -> default
+    (no "0 = unlimited" mode — the cap is the point)."""
+    raw = os.environ.get("CHAT_HISTORY_SEED_LIMIT", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SEED_LIMIT
+    return value if value > 0 else _DEFAULT_SEED_LIMIT
+
+
 def _history(session: Session, conversation_id: UUID) -> list[dict]:
     rows = (
         session.query(Message)
-        # created_at orders the turns; id is a STABLE (not chronological — UUID v4)
-        # tiebreak, only relevant for the negligible same-microsecond-insert case.
+        # Last N messages only (#113): desc + limit, then reverse — the reverse of
+        # (created_at desc, id desc) is exactly the old (created_at asc, id asc), so
+        # ordering and the stable UUID tiebreak are preserved while the window is
+        # capped. Writes are unbounded; only this read window is capped, and BOTH
+        # consumers (mesh seed + /conversations/current) flow through here.
         .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at, Message.id)
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(_seed_limit())
         .all()
     )
-    return [{"role": m.role, "content": m.content} for m in rows]
+    return [{"role": m.role, "content": m.content} for m in reversed(rows)]
 
 
 def get_or_create_active_conversation() -> TurnContext:

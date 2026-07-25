@@ -67,3 +67,39 @@ def test_active_conversation_is_user_scoped(store_db):
             s.merge(User(id=OTHER_USER, email="other@example.com"))
         theirs = transcript.get_or_create_active_conversation()
         assert theirs.conversation_id != mine.conversation_id  # FAILS if scoping is dropped
+
+
+def _seed_numbered_messages(store_db, conversation_id, count):
+    """Insert messages 'm1'..'m{count}' with explicit, strictly-increasing created_at
+    (the #147 flake lesson: same-timestamp rows are ordered by a UUID coin flip)."""
+    from datetime import UTC, datetime, timedelta
+
+    from agentic_librarian.db.models import Message
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    with store_db.get_session() as s:
+        for i in range(1, count + 1):
+            s.add(
+                Message(
+                    conversation_id=conversation_id,
+                    role="user" if i % 2 else "assistant",
+                    content=f"m{i}",
+                    created_at=base + timedelta(seconds=i),
+                )
+            )
+
+
+@pytest.mark.parametrize(
+    "seeded,expected_contents",
+    [
+        (7, ["m4", "m5", "m6", "m7"]),  # over-cap: exactly the LAST 4, oldest-first
+        (4, ["m1", "m2", "m3", "m4"]),  # exactly-at-cap: all 4
+        (2, ["m1", "m2"]),  # under-cap: unchanged
+    ],
+)
+def test_history_is_capped_to_last_n_oldest_first(store_db, monkeypatch, seeded, expected_contents):
+    monkeypatch.setenv("CHAT_HISTORY_SEED_LIMIT", "4")
+    ctx = transcript.get_or_create_active_conversation()
+    _seed_numbered_messages(store_db, ctx.conversation_id, seeded)
+    reloaded = transcript.get_or_create_active_conversation()
+    assert [m["content"] for m in reloaded.history] == expected_contents
