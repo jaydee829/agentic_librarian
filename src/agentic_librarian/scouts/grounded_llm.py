@@ -112,7 +112,9 @@ class ClaudeGroundedLLM:
             if result_val and isinstance(result_val, str):
                 text = result_val
             usage = getattr(message, "usage", None)
-            if usage:
+            # isinstance guard matches agents/backends/claude.py: a non-dict usage on a
+            # non-Result message must not crash the scout path.
+            if isinstance(usage, dict):
                 record_llm_call(
                     "anthropic",
                     self.model,
