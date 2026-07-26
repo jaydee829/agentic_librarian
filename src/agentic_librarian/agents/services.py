@@ -7,6 +7,7 @@ from google.adk.agents import LlmAgent
 from google.adk.models.google_llm import Gemini
 from google.adk.tools import AgentTool, FunctionTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
+from pydantic import Field
 
 from agentic_librarian.agents import prompts
 from agentic_librarian.agents.schemas import Targets
@@ -77,7 +78,10 @@ class _ByokGemini(Gemini):
     read `GOOGLE_API_KEY` (the app key) for that path unless `_live_api_client` is given
     the same treatment as `api_client` here."""
 
-    byok_api_key: str
+    # repr=False + exclude=True: the plaintext key must never surface in repr()/str()/
+    # model_dump()/model_dump_json() of this model or any agent that embeds it (the
+    # spec's never-logged mandate) — a plain field would print it in every repr.
+    byok_api_key: str = Field(repr=False, exclude=True)
 
     @functools.cached_property
     def api_client(self):

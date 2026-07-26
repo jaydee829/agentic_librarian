@@ -258,6 +258,19 @@ def test_gemini_with_api_key_binds_a_client_to_that_key():
     assert model.api_client.models._api_client.api_key == "user-secret-key"
 
 
+def test_byok_gemini_never_exposes_the_key_in_repr_or_dumps():
+    # Leak-surface guard (arc 3/3 branch review I-1): the plaintext key must not appear
+    # in any serialized/printable form of the model — a future debug log or error
+    # reporter that reprs/dumps the agent tree must not print user secrets.
+    model = services._gemini("model-x", api_key="user-secret-key")
+    assert "user-secret-key" not in repr(model)
+    assert "user-secret-key" not in str(model)
+    assert "user-secret-key" not in str(model.model_dump())
+    assert "user-secret-key" not in model.model_dump_json()
+    # The key still WORKS (excluded from serialization, not from the attribute).
+    assert model.byok_api_key == "user-secret-key"
+
+
 def test_gemini_byok_generate_content_async_actually_uses_the_byok_client(monkeypatch):
     """Behavioral canary (task-3 review): the construction-level test above proves
     `.api_client` is BOUND to the byok key, but that alone doesn't prove ADK's REAL call
