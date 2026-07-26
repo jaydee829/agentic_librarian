@@ -52,6 +52,10 @@ def kofi_webhook(data: str = Form(...)):  # noqa: B008
         amount = Decimal(str(event.get("amount") or "0"))
     except InvalidOperation:
         amount = Decimal(0)
+    if not amount.is_finite():
+        # "nan"/"-nan"/"Infinity" parse successfully (no InvalidOperation above) but crash
+        # entitlements.classify()'s `amount >= threshold` ordering comparison.
+        amount = Decimal(0)
     tier_name = event.get("tier_name") or None
     is_sub = bool(event.get("is_subscription_payment", False))
     kofi_type = str(event.get("type") or "")
