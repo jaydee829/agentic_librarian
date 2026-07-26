@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -6,8 +7,9 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import internal as internal_mod
 from agentic_librarian.api import main as api_main
-from agentic_librarian.core.user_context import current_user_id, get_required_user_id
-from agentic_librarian.db.models import Author, Edition, Trope, Work, WorkContributor, WorkTrope
+from agentic_librarian.core import byok
+from agentic_librarian.core.user_context import DEFAULT_USER_ID, current_user_id, get_required_user_id
+from agentic_librarian.db.models import Author, Edition, Trope, UserCredential, Work, WorkContributor, WorkTrope
 from agentic_librarian.db.session import DatabaseManager
 from agentic_librarian.enrichment import two_phase
 
@@ -15,6 +17,7 @@ pytestmark = pytest.mark.db_integration
 
 VALID_AUD = "https://librarian.example.run.app/internal/enrich/x"
 QUEUE_SA = "queue-invoker@p.iam.gserviceaccount.com"
+KMS_KEY_NAME = "projects/p/locations/us-central1/keyRings/librarian/cryptoKeys/byok-credentials"
 
 
 @pytest.fixture
@@ -28,6 +31,7 @@ def client(db_url, monkeypatch):
     monkeypatch.setenv("ENRICH_INVOKER_SA", QUEUE_SA)
     monkeypatch.setenv("ENRICH_OIDC_AUDIENCE", VALID_AUD)
     yield TestClient(api_main.app)
+    byok.set_kms_client(None)  # never leak a fake KMS client into a later test
 
 
 def _seed_work(manager, *, with_real_trope=False):
@@ -356,3 +360,104 @@ def test_over_budget_and_enqueue_raises_is_deferred_enqueue_failed(client, db_ur
     resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
+
+
+# --- arc 3/3 BYOK: /internal/enrich resolves the requesting user's Gemini key ---
+
+
+class _FakeKmsClient:
+    """Reversible stand-in ciphertext (mirrors test_credentials_db.py) — no real KMS call."""
+
+    def __init__(self, decrypt_error: Exception | None = None):
+        self._decrypt_error = decrypt_error
+
+    def encrypt(self, request):
+        return SimpleNamespace(ciphertext=request["plaintext"][::-1])
+
+    def decrypt(self, request):
+        if self._decrypt_error is not None:
+            raise self._decrypt_error
+        return SimpleNamespace(plaintext=request["ciphertext"][::-1])
+
+
+def _seed_credential(manager, *, user_id, plaintext_key):
+    """Seed a UserCredential row with real (fake-KMS) ciphertext for `user_id` — the byok
+    caller must already be a real `users` row (DEFAULT_USER_ID, autoseeded by conftest)."""
+    ciphertext = byok.encrypt_key(plaintext_key)
+    with manager.get_session() as s:
+        s.add(UserCredential(user_id=user_id, vendor="gemini", encrypted_key=ciphertext, kms_key_name=KMS_KEY_NAME))
+        s.flush()
+
+
+def test_byok_credentialed_user_enrich_passes_key_and_byok_source(client, db_url, monkeypatch):
+    """The enrich handler resolves DEFAULT_USER_ID's stored key and threads it into
+    two_phase.enrich_deep as api_key/key_source='byok' (probe seam) — proving the deep
+    pass would actually run on the user's own key, not the app key."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient())
+    _seed_credential(manager, user_id=DEFAULT_USER_ID, plaintext_key="sk-users-real-gemini-key")
+
+    captured = {}
+
+    def _fake_enrich_deep(wid, api_key=None, key_source="app"):
+        captured["args"] = (wid, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "enriched"}
+    assert captured["args"] == (work_id, "sk-users-real-gemini-key", "byok")
+
+
+def test_user_without_byok_credential_enrich_stays_app_keyed(client, db_url, monkeypatch):
+    """No stored credential (the common case) -> resolution returns (None, 'app') and the
+    handler's call to enrich_deep is byte-identical to pre-BYOK behavior (no extra kwargs)."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+
+    captured = {}
+
+    def _fake_enrich_deep(wid, api_key=None, key_source="app"):
+        captured["args"] = (wid, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert captured["args"] == (work_id, None, "app")
+
+
+def test_byok_key_error_returns_200_byok_key_error_and_never_calls_enrich_deep(client, db_url, monkeypatch):
+    """Spec error table: a decrypt failure (KMS outage / corrupted ciphertext / revoked key)
+    must never fall back to the app key. The task is consumed with 200 byok_key_error —
+    retrying can't fix a revoked key; the requeue sweep is the backstop — and the paid
+    deep-enrichment pass must NEVER run."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient(decrypt_error=RuntimeError("kms unavailable")))
+    _seed_credential(manager, user_id=DEFAULT_USER_ID, plaintext_key="sk-doesnt-matter")
+
+    ran_enrich_deep = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase, "enrich_deep", lambda *a, **k: ran_enrich_deep.__setitem__("called", True) or "done"
+    )
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "byok_key_error"}
+    assert ran_enrich_deep["called"] is False

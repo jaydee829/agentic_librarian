@@ -102,7 +102,13 @@ class APIScout(BaseScout):
 class LLMScout(BaseScout):
     """Abstract base class for scouts using LLMs for unstructured data."""
 
-    def __init__(self, api_key: str = None, model_name: str = None, llm: GroundedLLM | None = None):
+    def __init__(
+        self,
+        api_key: str = None,
+        model_name: str = None,
+        llm: GroundedLLM | None = None,
+        key_source: str = "app",
+    ):
         # Fallback to GOOGLE_SEARCH_API_KEY if no specific key provided (also used by AudiobookScout's
         # Custom Search and by the Gemini provider/embeddings).
         key = api_key or os.environ.get("GOOGLE_SEARCH_API_KEY")
@@ -114,7 +120,9 @@ class LLMScout(BaseScout):
         self.model_name = (
             model_name or os.environ.get("GROUNDING_MODEL") or os.environ.get("EXPLORER_MODEL") or "gemini-2.5-flash"
         )
-        self._llm = llm or get_grounded_llm(self.api_key, model_name=self.model_name)
+        # key_source (arc 3/3 BYOK) threads through to grounded-scout usage metering; 'app'
+        # unless the caller passed a byok-resolved user key (orchestration/definitions.py).
+        self._llm = llm or get_grounded_llm(self.api_key, model_name=self.model_name, key_source=key_source)
 
     def _safe_extract_json(self, response_text: str, title: str, author: str, retry_count: int = 0) -> dict | None:
         """Cleans and parses LLM JSON output with descriptive error logging."""

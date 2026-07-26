@@ -214,7 +214,7 @@ def add_read_event(work_id: UUID, *, completed, rating: int | None, notes: str |
         return {"read_number": len(prior_reads) + 1, "already_logged": False, "pick_resolved": pick_resolved}
 
 
-def complete_edition(work_id: UUID, fmt: str) -> str:
+def complete_edition(work_id: UUID, fmt: str, api_key: str | None = None, key_source: str = "app") -> str:
     """Format-completion pass (history-format-edit spec): fill the (work_id, fmt)
     edition's metadata after a history-entry format change. Fast API scouts always
     (ISBN, pages/audio minutes, publication date); audiobook scouts + per-narrator
@@ -239,7 +239,11 @@ def complete_edition(work_id: UUID, fmt: str) -> str:
                   requeue-sweep backstop economics to protect. A 500 → Cloud Tasks retry only
                   occurs for failures OUTSIDE the scout manager (persist/DB errors), which
                   propagate uncaught.
-      "done"    — scouted values merged onto the edition."""
+      "done"    — scouted values merged onto the edition.
+
+    `api_key`/`key_source` (arc 3/3 BYOK) thread into the completion scout manager's LLM
+    scouts and the narrator-style StyleScout call below — a byok user's own key, or the
+    app key by default."""
     fmt = (fmt or "")[:50]
 
     with db_manager.get_session() as session:
@@ -254,14 +258,14 @@ def complete_edition(work_id: UUID, fmt: str) -> str:
         if edition is None:
             return "missing"
 
-    enriched = create_completion_scout_manager().enrich(title=title, author=author, format=fmt)
+    enriched = create_completion_scout_manager(api_key, key_source).enrich(title=title, author=author, format=fmt)
     if not enriched:
         return "empty"
 
     narrator_names = [n for n in (enriched.get("narrator_names") or []) if isinstance(n, str) and n.strip()]
     narrator_styles: dict[str, dict] = {}
     if "audiobook" in fmt.lower() and narrator_names:
-        style_scout = StyleScout()
+        style_scout = StyleScout(api_key, key_source=key_source)
         for n_name in narrator_names:
             try:
                 narrator_styles[n_name] = style_scout.scout_narrator_style(n_name)
@@ -304,7 +308,7 @@ def complete_edition(work_id: UUID, fmt: str) -> str:
     return "done"
 
 
-def enrich_deep(work_id: UUID) -> str:
+def enrich_deep(work_id: UUID, api_key: str | None = None, key_source: str = "app") -> str:
     """Deep pass (Cloud Tasks target): read the Work's identity in a short session, run
     the slow LLM scouts with NO session held (#94 — previously minutes idle-in-transaction
     at enrich-queue concurrency 4, where a late transient failure also re-paid every LLM
@@ -345,6 +349,9 @@ def enrich_deep(work_id: UUID) -> str:
                      row is recorded; the twin's data is untouched by this function beyond
                      persist's own write. Non-retryable success — see api/internal.py.
 
+    `api_key`/`key_source` (arc 3/3 BYOK) thread into the deep scout manager's LLM scouts —
+    a byok user's own key, or the app key by default.
+
     Reviewer-found bug (fixed here): the redirect branch used to INSERT the detected_duplicates
     row (work_id_a=work_id) BEFORE re-loading the invoked work by id. If the invoked row had
     been deleted mid-pass, that insert FK-violated on work_id_a, and the raised exception rolled
@@ -366,7 +373,7 @@ def enrich_deep(work_id: UUID) -> str:
         title = work.title  # scalars captured before close (detached-instance rule)
         fmt = work.editions[0].format if work.editions else "ebook"
 
-    row = _run_scouts(create_deep_scout_manager(), title=title, author=author, fmt=fmt)
+    row = _run_scouts(create_deep_scout_manager(api_key, key_source), title=title, author=author, fmt=fmt)
     if row is None:
         # scouts found nothing to add; the pass is done (not retryable on its own), but
         # stamp completion so the requeue sweep doesn't treat this work as never-attempted.

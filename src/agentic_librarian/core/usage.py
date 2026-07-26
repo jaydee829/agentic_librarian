@@ -34,16 +34,18 @@ def record_llm_call(
     input_tokens: int,
     output_tokens: int,
     conversation_id: UUID | None = None,
+    key_source: str = "app",
 ) -> None:
-    """Write one usage row for the current context user. key_source is 'app' until
-    Lift 3's BYOK routing exists. Never raises."""
+    """Write one usage row for the current context user. key_source is 'app' unless
+    the caller threaded a byok-resolved key through (arc 3/3) — this is the ONE place
+    key_source is written. Never raises."""
     try:
         user_id = get_required_user_id()
         with db_manager.get_session() as session:
             session.add(
                 Usage(
                     user_id=user_id,
-                    key_source="app",
+                    key_source=key_source,
                     vendor=vendor,
                     model=model,
                     input_tokens=int(input_tokens or 0),

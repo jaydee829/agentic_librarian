@@ -51,7 +51,7 @@ def test_enrich_deep_updates_same_work_idempotently(db_url, monkeypatch):
             {"name": "Kevin J. Anderson", "role": "Author"},  # deep pass discovers a co-author
         ],
     }
-    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda: _FakeManager(deep))
+    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda *a, **k: _FakeManager(deep))
 
     work_id = _seed_work(manager, title="Dune", author="Frank Herbert")
 
@@ -101,7 +101,7 @@ def test_enrich_deep_returns_missing_not_done_when_nothing_was_persisted(db_url,
         "narrator_names": [],
         "contributors": [{"name": None, "role": "Author"}],
     }
-    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda: _FakeManager(deep))
+    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda *a, **k: _FakeManager(deep))
 
     work_id = _seed_work(manager, title="Vanishing Work", author="Some Author")
 
@@ -164,7 +164,7 @@ def test_enrich_deep_redirect_pins_invoked_work_and_records_detection(db_url, mo
         "narrator_names": [],
         "contributors": [{"name": "Casualfarmer, CasualFarmer", "role": "Author"}],
     }
-    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda: _FakeManager(deep))
+    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda *a, **k: _FakeManager(deep))
 
     twin_id, invoked_id = _seed_duplicate_identity_pair(
         manager, title="Beware of Chicken", author="Casualfarmer, CasualFarmer"
@@ -253,7 +253,7 @@ def test_enrich_deep_redirect_missing_invoked_row_leaves_twin_data_intact_no_det
     monkeypatch.setattr(
         two_phase,
         "create_deep_scout_manager",
-        lambda: _DeletingFakeManager(deep, manager=manager, invoked_id=invoked_id),
+        lambda *a, **k: _DeletingFakeManager(deep, manager=manager, invoked_id=invoked_id),
     )
 
     assert two_phase.enrich_deep(invoked_id) == "missing"
@@ -291,7 +291,7 @@ def test_enrich_deep_redirect_is_idempotent_on_redelivery(db_url, monkeypatch):
         "narrator_names": [],
         "contributors": [{"name": "Casualfarmer, CasualFarmer", "role": "Author"}],
     }
-    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda: _FakeManager(deep))
+    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda *a, **k: _FakeManager(deep))
 
     twin_id, invoked_id = _seed_duplicate_identity_pair(
         manager, title="Beware of Chicken", author="Casualfarmer, CasualFarmer"
@@ -321,7 +321,7 @@ def test_enrich_deep_empty_pass_still_stamps_deep_enriched_at(db_url, monkeypatc
     treat this work as never-attempted."""
     from agentic_librarian.enrichment import two_phase
 
-    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda: _FakeManager(None))
+    monkeypatch.setattr(two_phase, "create_deep_scout_manager", lambda *a, **k: _FakeManager(None))
 
     manager = DatabaseManager(db_url)
     monkeypatch.setattr(two_phase, "db_manager", manager)
