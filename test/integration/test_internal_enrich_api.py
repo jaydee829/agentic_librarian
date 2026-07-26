@@ -461,3 +461,92 @@ def test_byok_key_error_returns_200_byok_key_error_and_never_calls_enrich_deep(c
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(work_id), "status": "byok_key_error"}
     assert ran_enrich_deep["called"] is False
+
+
+# --- task-2 review: key resolution must run BEFORE the budget gate, and a byok pass must
+# never be deferred by the tier-blind app-key governor (spec AC#2) ---
+
+
+def test_byok_credentialed_user_bypasses_budget_gate_and_still_runs(client, db_url, monkeypatch):
+    """Even with the app-key governor exhausted, a byok user's task must run on their own
+    key — never deferred by a budget that their usage rows are excluded from."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient())
+    _seed_credential(manager, user_id=DEFAULT_USER_ID, plaintext_key="sk-users-real-gemini-key")
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+
+    captured = {}
+
+    def _fake_enrich_deep(wid, api_key=None, key_source="app"):
+        captured["args"] = (wid, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+    enqueue_calls = []
+    monkeypatch.setattr(internal_mod, "enqueue_enrichment", lambda *a, **k: enqueue_calls.append((a, k)) or True)
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "enriched"}
+    assert captured["args"] == (work_id, "sk-users-real-gemini-key", "byok")
+    assert enqueue_calls == []  # never deferred
+
+
+def test_app_key_user_still_defers_when_over_budget(client, db_url, monkeypatch):
+    """An app-key user (no byok credential) is unaffected by the reorder: the budget gate
+    still fires and defers exactly as before."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+    ran_enrich_deep = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase, "enrich_deep", lambda *a, **k: ran_enrich_deep.__setitem__("called", True) or "done"
+    )
+    calls = []
+    monkeypatch.setattr(
+        internal_mod, "enqueue_enrichment", lambda wid, user_id=None, schedule_time=None: calls.append(wid) or True
+    )
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deferred"
+    assert ran_enrich_deep["called"] is False
+    assert calls == [str(work_id)]
+
+
+def test_byok_key_error_never_reaches_the_budget_gate(client, db_url, monkeypatch):
+    """The ByokKeyError early-return must fire BEFORE any budget logic — a revoked/broken
+    byok key must not even consult the (irrelevant) app-key governor."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient(decrypt_error=RuntimeError("kms unavailable")))
+    _seed_credential(manager, user_id=DEFAULT_USER_ID, plaintext_key="sk-doesnt-matter")
+
+    budget_calls = {"called": False}
+
+    def _fail_if_called(uid):
+        budget_calls["called"] = True
+        return False, "global grounded-call governor reached"
+
+    monkeypatch.setattr(internal_mod.budgets, "enrichment_allowed", _fail_if_called)
+
+    resp = client.post(
+        f"/internal/enrich/{work_id}?user_id={DEFAULT_USER_ID}", headers={"Authorization": "Bearer good"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "byok_key_error"}
+    assert budget_calls["called"] is False

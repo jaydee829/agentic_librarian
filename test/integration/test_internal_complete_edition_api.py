@@ -322,3 +322,98 @@ def test_byok_key_error_returns_200_byok_key_error_and_never_calls_complete_edit
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "byok_key_error"}
     assert ran_complete["called"] is False
+
+
+# --- task-2 review: key resolution must run BEFORE the budget gate, and a byok pass must
+# never be deferred by the tier-blind app-key governor (spec AC#2) ---
+
+
+def test_byok_credentialed_user_bypasses_budget_gate_and_still_runs(client, db_url, monkeypatch):
+    """Even with the app-key governor exhausted, a byok user's completion task must run on
+    their own key — never deferred by a budget that their usage rows are excluded from."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient())
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-users-real-gemini-key")
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+
+    captured = {}
+
+    def _fake_complete(wid, fmt, api_key=None, key_source="app"):
+        captured["args"] = (wid, fmt, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "complete_edition", _fake_complete)
+    enqueue_calls = []
+    monkeypatch.setattr(
+        internal_mod, "enqueue_edition_completion", lambda *a, **k: enqueue_calls.append((a, k)) or True
+    )
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "done"}
+    assert captured["args"] == (wid, "audiobook", "sk-users-real-gemini-key", "byok")
+    assert enqueue_calls == []  # never deferred
+
+
+def test_app_key_user_still_defers_when_over_budget(client, monkeypatch):
+    """An app-key user (no byok credential) is unaffected by the reorder: the budget gate
+    still fires and defers exactly as before."""
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+    ran_complete = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase,
+        "complete_edition",
+        lambda wid, fmt, **k: ran_complete.__setitem__("called", True) or "done",
+    )
+    calls = []
+    monkeypatch.setattr(
+        internal_mod,
+        "enqueue_edition_completion",
+        lambda wid, fmt, user_id=None, schedule_time=None: calls.append((wid, fmt)) or True,
+    )
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deferred"
+    assert ran_complete["called"] is False
+    assert calls == [(str(wid), "audiobook")]
+
+
+def test_byok_key_error_never_reaches_the_budget_gate(client, db_url, monkeypatch):
+    """The ByokKeyError early-return must fire BEFORE any budget logic — a revoked/broken
+    byok key must not even consult the (irrelevant) app-key governor."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient(decrypt_error=RuntimeError("kms unavailable")))
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-doesnt-matter")
+
+    budget_calls = {"called": False}
+
+    def _fail_if_called(uid):
+        budget_calls["called"] = True
+        return False, "global grounded-call governor reached"
+
+    monkeypatch.setattr(internal_mod.budgets, "enrichment_allowed", _fail_if_called)
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "byok_key_error"}
+    assert budget_calls["called"] is False
