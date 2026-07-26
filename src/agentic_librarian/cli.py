@@ -7,6 +7,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import UTC, datetime
 
 from agentic_librarian.agents.backends import get_backend
 from agentic_librarian.chat_recorder import ConversationRecorder
@@ -35,6 +36,24 @@ def _parse_args(argv=None):
     invite_parser = user_sub.add_parser("invite", help="invite an email — creates the user row; they sign in later")
     invite_parser.add_argument("email", help="the invitee's email (the invite key; lowercased)")
     invite_parser.add_argument("--name", default=None, help="display name (optional)")
+    sub_parser = user_sub.add_parser(
+        "subscribe", help="grant/extend supporter entitlement (comp or Ko-fi mismatch fix)"
+    )
+    sub_parser.add_argument("email")
+    group = sub_parser.add_mutually_exclusive_group()
+    group.add_argument("--months", type=int, default=None, help="N x 33-day grants (default 1)")
+    group.add_argument("--days", type=int, default=None)
+    group.add_argument("--until", default=None, help="YYYY-MM-DD (absolute)")
+
+    payments_parser = subparsers.add_parser("payments", help="Ko-fi payment records (operator)")
+    payments_sub = payments_parser.add_subparsers(dest="payments_command")
+    list_parser = payments_sub.add_parser("list", help="list payments")
+    list_parser.add_argument("--unmatched", action="store_true")
+    match_parser = payments_sub.add_parser(
+        "match", help="link an unmatched payment to a user and apply its entitlement"
+    )
+    match_parser.add_argument("kofi_transaction_id")
+    match_parser.add_argument("email")
     return parser.parse_args(argv)
 
 
@@ -56,6 +75,8 @@ def main(argv=None) -> int:
 def _dispatch(args) -> int:
     if getattr(args, "command", None) == "user":
         return _run_user(args)
+    if getattr(args, "command", None) == "payments":
+        return _run_payments(args)
     if getattr(args, "command", None) == "add":
         return _run_add(args)
     if args.backend:
@@ -105,14 +126,29 @@ def _invite_db_manager():
     return DatabaseManager()
 
 
+def _normalize_email(raw: str) -> str:
+    return raw.strip().lower()
+
+
+def _is_valid_email(email: str) -> bool:
+    return "@" in email and not email.startswith("@") and not email.endswith("@")
+
+
 def _run_user(args) -> int:
-    if getattr(args, "user_command", None) != "invite":
-        print("usage: librarian user invite <email> [--name NAME]", file=sys.stderr)
-        return 2
+    user_command = getattr(args, "user_command", None)
+    if user_command == "invite":
+        return _run_user_invite(args)
+    if user_command == "subscribe":
+        return _run_user_subscribe(args)
+    print("usage: librarian user <invite|subscribe> ...", file=sys.stderr)
+    return 2
+
+
+def _run_user_invite(args) -> int:
     from agentic_librarian.db.models import User
 
-    email = args.email.strip().lower()
-    if "@" not in email or email.startswith("@") or email.endswith("@"):
+    email = _normalize_email(args.email)
+    if not _is_valid_email(email):
         print(f"error: {email!r} does not look like an email address", file=sys.stderr)
         return 2
     db = _invite_db_manager()
@@ -125,6 +161,116 @@ def _run_user(args) -> int:
         session.add(User(email=email, display_name=args.name))
         session.flush()
     print(f"Invited {email}. They can now sign in (claim-by-email links their account on first sign-in).")
+    return 0
+
+
+def _run_user_subscribe(args) -> int:
+    """Operator comp / Ko-fi-mismatch fallback: grant or extend a user's supporter
+    entitlement directly. --months/--days extend (active subs stack, lapsed restart from
+    now, via entitlements.extend); --until SETS subscriber_until absolutely (UTC
+    midnight) — it does not stack."""
+    from agentic_librarian.core import entitlements
+    from agentic_librarian.db.models import User
+
+    email = _normalize_email(args.email)
+    if not _is_valid_email(email):
+        print(f"error: {email!r} does not look like an email address", file=sys.stderr)
+        return 2
+    db = _invite_db_manager()
+    with db.get_session() as session:
+        user = session.query(User).filter(User.email == email).first()
+        if user is None:
+            print(f"error: no user found for {email!r} (use `user invite` first)", file=sys.stderr)
+            return 2
+        if args.until is not None:
+            try:
+                until = datetime.strptime(args.until, "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError:
+                print(f"error: {args.until!r} is not a valid YYYY-MM-DD date", file=sys.stderr)
+                return 2
+            user.subscriber_until = until
+        elif args.days is not None:
+            user.subscriber_until = entitlements.extend(user.subscriber_until, args.days)
+        else:
+            months = args.months if args.months is not None else 1
+            user.subscriber_until = entitlements.extend(user.subscriber_until, months * 33)
+        session.flush()
+        result = user.subscriber_until
+    print(f"{email}: subscriber_until -> {result.isoformat()}")
+    return 0
+
+
+def _run_payments(args) -> int:
+    payments_command = getattr(args, "payments_command", None)
+    if payments_command == "list":
+        return _run_payments_list(args)
+    if payments_command == "match":
+        return _run_payments_match(args)
+    print("usage: librarian payments <list|match> ...", file=sys.stderr)
+    return 2
+
+
+def _run_payments_list(args) -> int:
+    from agentic_librarian.db.models import Payment
+
+    db = _invite_db_manager()
+    with db.get_session() as session:
+        query = session.query(Payment).order_by(Payment.created_at)
+        if args.unmatched:
+            query = query.filter(Payment.matched_user_id.is_(None))
+        rows = query.all()
+        header = (
+            f"{'kofi_transaction_id':<24} {'created_at':<10} {'email':<30} "
+            f"{'amount':>8} {'type/tier':<16} {'matched':<7} {'entitlement_days':>16}"
+        )
+        print(header)
+        for p in rows:
+            type_tier = p.tier_name or p.kofi_type
+            matched = "yes" if p.matched_user_id else "no"
+            print(
+                f"{p.kofi_transaction_id:<24} {p.created_at.date().isoformat():<10} {p.email:<30} "
+                f"{p.amount:>8} {type_tier:<16} {matched:<7} {p.entitlement_days:>16}"
+            )
+    return 0
+
+
+def _run_payments_match(args) -> int:
+    """Recomputes classify()/grant_days() from the STORED row's fields (kofi_type,
+    is_subscription_payment, tier_name, amount) rather than trusting anything passed on
+    the command line, so the CLI and the webhook grant identically off a single source
+    of truth."""
+    from agentic_librarian.core import entitlements
+    from agentic_librarian.db.models import Payment, User
+
+    email = _normalize_email(args.email)
+    if not _is_valid_email(email):
+        print(f"error: {email!r} does not look like an email address", file=sys.stderr)
+        return 2
+    db = _invite_db_manager()
+    with db.get_session() as session:
+        payment = session.query(Payment).filter(Payment.kofi_transaction_id == args.kofi_transaction_id).first()
+        if payment is None:
+            print(f"error: no payment found for transaction {args.kofi_transaction_id!r}", file=sys.stderr)
+            return 2
+        user = session.query(User).filter(User.email == email).first()
+        if user is None:
+            print(f"error: no user found for {email!r} (use `user invite` first)", file=sys.stderr)
+            return 2
+        if payment.matched_user_id is not None:
+            print(f"error: payment {args.kofi_transaction_id!r} is already matched", file=sys.stderr)
+            return 2
+        kind = entitlements.classify(
+            payment.kofi_type, payment.is_subscription_payment, payment.tier_name, payment.amount
+        )
+        days = entitlements.grant_days(kind)
+        payment.matched_user_id = user.id
+        payment.entitlement_days = days
+        if days > 0:
+            user.subscriber_until = entitlements.extend(user.subscriber_until, days)
+        session.flush()
+        result = user.subscriber_until
+    until_msg = result.isoformat() if result else "unchanged"
+    print(f"Matched {args.kofi_transaction_id} to {email} ({kind}, +{days}d) -> subscriber_until {until_msg}")
     return 0
 
 
