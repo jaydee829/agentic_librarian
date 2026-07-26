@@ -57,6 +57,7 @@ def test_chat_turns_today(budgets_db, role, owner, when, expected_count):
     with budgets_db.get_session() as session:
         if owner == "other":
             session.merge(User(id=OTHER_USER, email="other@example.com"))
+            session.flush()  # OTHER_USER's row must exist before the FK-referencing insert below
         convo = Conversation(user_id=user_id)
         session.add(convo)
         session.flush()
@@ -102,6 +103,7 @@ def test_grounded_calls_today_per_user_vs_global(budgets_db):
     user_id must see only that user's."""
     with budgets_db.get_session() as session:
         session.merge(User(id=OTHER_USER, email="other@example.com"))
+        session.flush()  # OTHER_USER's row must exist before the FK-referencing Usage rows below
         session.add_all(
             [
                 Usage(

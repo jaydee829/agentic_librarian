@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import internal as internal_mod
 from agentic_librarian.api import main as api_main
-from agentic_librarian.core.user_context import get_required_user_id
+from agentic_librarian.core.user_context import current_user_id, get_required_user_id
 from agentic_librarian.db.session import DatabaseManager
 
 pytestmark = pytest.mark.db_integration
@@ -88,7 +88,15 @@ def test_valid_queue_token_without_user_id_completion_unattributed(client, monke
 
     monkeypatch.setattr(internal_mod.two_phase, "complete_edition", fake_complete)
     wid = uuid4()
-    resp = client.post(f"/internal/complete-edition/{wid}?format=audiobook", headers={"Authorization": "Bearer ok"})
+    # Neutralize the autouse _default_user_context fixture's ambient DEFAULT_USER_ID for
+    # this request only. TestClient copies the current contextvars into the ASGI call, so
+    # without this the probe would see an ambient user and never observe the "no user in
+    # context" path a real requeue-sweep task (no ?user_id=) actually exercises in prod.
+    token = current_user_id.set(None)
+    try:
+        resp = client.post(f"/internal/complete-edition/{wid}?format=audiobook", headers={"Authorization": "Bearer ok"})
+    finally:
+        current_user_id.reset(token)
     assert resp.status_code == 200
     assert seen["raised"] is True
 
