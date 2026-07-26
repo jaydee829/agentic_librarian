@@ -83,6 +83,25 @@ describe('SettingsView — Your API key', () => {
     expect(screen.getByRole('button', { name: 'Remove key' })).toBeInTheDocument()
   })
 
+  it('shows the configured state and clears the input even when the post-save refetch fails', async () => {
+    vi.mocked(client.getCredentials)
+      .mockResolvedValueOnce({ configured: false, updated_at: null })
+      .mockRejectedValueOnce(new Error('getCredentials → 500'))
+    vi.mocked(client.putCredentials).mockResolvedValueOnce(undefined)
+    render(<SettingsView />)
+
+    const field = await screen.findByLabelText(/gemini api key/i)
+    fireEvent.change(field, { target: { value: 'AIza-fake-key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
+
+    await waitFor(() => expect(client.putCredentials).toHaveBeenCalledWith('AIza-fake-key'))
+    expect(await screen.findByText(/using your own key since/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove key' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/gemini api key/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Save failed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Could not save your key. Please try again.')).not.toBeInTheDocument()
+  })
+
   it('shows the server message on an invalid key (422)', async () => {
     vi.mocked(client.getCredentials).mockResolvedValue({ configured: false, updated_at: null })
     vi.mocked(client.putCredentials).mockRejectedValueOnce(new ApiError(422, 'That key looks invalid.'))

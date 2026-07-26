@@ -64,12 +64,23 @@ export default function SettingsView() {
     setByokStatus('Saving…')
     try {
       await putCredentials(apiKey)
-      const next = await getCredentials()
-      setCredentials(next)
-      setApiKeyInput('')
-      setByokStatus('Key saved')
     } catch (err) {
       setByokStatus(err instanceof ApiError ? err.detail : BYOK_SAVE_FAILED)
+      setByokBusy(false)
+      return
+    }
+    // The key is stored and the tier already flipped server-side — treat this as
+    // success regardless of the refetch below. Optimistic `updated_at` covers a
+    // refetch failure; a follow-up getCredentials() (own try/catch) just refines it
+    // with the server's real timestamp when available.
+    setApiKeyInput('')
+    setCredentials({ configured: true, updated_at: new Date().toISOString() })
+    setByokStatus('Key saved')
+    try {
+      const next = await getCredentials()
+      setCredentials(next)
+    } catch {
+      // Keep the optimistic configured state — the save itself already succeeded.
     } finally {
       setByokBusy(false)
     }
