@@ -17,6 +17,7 @@ from agentic_librarian.agents.runtime import LibrarianConversation, astart_conve
 from agentic_librarian.api import analysis, auth, recommendations
 from agentic_librarian.api import availability as availability_api
 from agentic_librarian.api import imports as imports_api
+from agentic_librarian.api import kofi as kofi_api
 from agentic_librarian.api import libraries as libraries_api
 from agentic_librarian.api.analysis import router as analysis_router
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
@@ -100,6 +101,7 @@ async def lifespan(app: FastAPI):
     two_phase.set_db_manager(shared)
     imports_worker.set_db_manager(shared)
     budgets.set_db_manager(shared)
+    kofi_api.set_db_manager(shared)
     yield
 
 
