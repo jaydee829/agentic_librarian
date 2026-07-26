@@ -151,7 +151,7 @@ jobs:
             --service-account=librarian-api-runtime@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --add-cloudsql-instances=${{ vars.GCP_CLOUDSQL_CONNECTION }}
             --set-secrets=DATABASE_URL=librarian-db-url:latest,GOOGLE_SEARCH_API_KEY=librarian-google-search-key:latest,GOOGLE_BOOKS_API_KEY=librarian-google-books-key:latest,HARDCOVER_API_KEY=librarian-hardcover-key:latest,KOFI_VERIFICATION_TOKEN=librarian-kofi-verification-token:latest
-            --set-env-vars=SIGNUP_MODE=invite,GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }},AGENT_BACKEND=adk,GEMINI_MODEL=gemini-3.1-flash-lite,CLOUD_TASKS_QUEUE=${{ vars.GCP_CLOUD_TASKS_QUEUE }},IMPORT_TASKS_QUEUE=${{ vars.GCP_IMPORT_TASKS_QUEUE }},ENRICH_TARGET_BASE_URL=${{ vars.GCP_RUN_BASE_URL }},ENRICH_INVOKER_SA=${{ vars.GCP_ENRICH_INVOKER_SA }},ENRICH_OIDC_AUDIENCE=${{ vars.GCP_RUN_BASE_URL }},SEARCH_ENGINE_ID=${{ vars.GCP_SEARCH_ENGINE_ID }}
+            --set-env-vars=SIGNUP_MODE=invite,GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }},AGENT_BACKEND=adk,GEMINI_MODEL=gemini-3.1-flash-lite,CLOUD_TASKS_QUEUE=${{ vars.GCP_CLOUD_TASKS_QUEUE }},IMPORT_TASKS_QUEUE=${{ vars.GCP_IMPORT_TASKS_QUEUE }},ENRICH_TARGET_BASE_URL=${{ vars.GCP_RUN_BASE_URL }},ENRICH_INVOKER_SA=${{ vars.GCP_ENRICH_INVOKER_SA }},ENRICH_OIDC_AUDIENCE=${{ vars.GCP_RUN_BASE_URL }},SEARCH_ENGINE_ID=${{ vars.GCP_SEARCH_ENGINE_ID }},KMS_KEY_NAME=projects/${{ vars.GCP_PROJECT_ID }}/locations/us-central1/keyRings/librarian/cryptoKeys/byok-credentials
             --max-instances=2
             --memory=2Gi
 

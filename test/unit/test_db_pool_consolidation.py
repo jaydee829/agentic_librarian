@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import analysis as analysis_mod
 from agentic_librarian.api import auth as auth_mod
+from agentic_librarian.api import credentials as credentials_mod
 from agentic_librarian.api import kofi as kofi_mod
 from agentic_librarian.api import main as main_mod
 from agentic_librarian.api import recommendations as recommendations_mod
@@ -26,6 +27,7 @@ def _restore_db_managers():
         analysis_mod.db_manager,
         budgets_mod.db_manager,
         kofi_mod.db_manager,
+        credentials_mod.db_manager,
     )
     yield
     (
@@ -37,6 +39,7 @@ def _restore_db_managers():
         analysis_mod.db_manager,
         budgets_mod.db_manager,
         kofi_mod.db_manager,
+        credentials_mod.db_manager,
     ) = saved
 
 
@@ -53,3 +56,4 @@ def test_startup_consolidates_api_pools(_restore_db_managers):
         assert analysis_mod.db_manager is shared
         assert budgets_mod.db_manager is shared
         assert kofi_mod.db_manager is shared
+        assert credentials_mod.db_manager is shared

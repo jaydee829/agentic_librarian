@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from agentic_librarian.agents.runtime import LibrarianConversation, astart_conversation
 from agentic_librarian.api import analysis, auth, recommendations
 from agentic_librarian.api import availability as availability_api
+from agentic_librarian.api import credentials as credentials_api
 from agentic_librarian.api import imports as imports_api
 from agentic_librarian.api import kofi as kofi_api
 from agentic_librarian.api import libraries as libraries_api
@@ -23,6 +24,7 @@ from agentic_librarian.api.analysis import router as analysis_router
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
 from agentic_librarian.api.availability import router as availability_router
 from agentic_librarian.api.books import router as books_router
+from agentic_librarian.api.credentials import router as credentials_router
 from agentic_librarian.api.firebase_auth_proxy import router as firebase_auth_proxy_router
 from agentic_librarian.api.imports import router as imports_router
 from agentic_librarian.api.internal import router as internal_router
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     imports_api.set_db_manager(shared)
     availability_api.set_db_manager(shared)
     libraries_api.set_db_manager(shared)
+    credentials_api.set_db_manager(shared)
     # GH #102: the in-process chat tools (mcp/server), the enrichment paths
     # (two_phase), and the import worker previously each held their own lazy pool —
     # up to ~9 engines/process. One pool per process keeps the connection math sane.
@@ -121,6 +124,7 @@ api_router.include_router(availability_router)
 api_router.include_router(books_router)
 api_router.include_router(imports_router)
 api_router.include_router(libraries_router)
+api_router.include_router(credentials_router)
 
 # Machine-only routers stay at root — never SPA-route collisions, and moving them would
 # break fixed contracts (Firebase /__/auth/*) or Cloud Tasks target URLs (/internal/*).
