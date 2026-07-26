@@ -128,6 +128,23 @@ def test_subscribe_rejects_non_email(_cli_db, capsys):
     assert "error" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--days", "0"], ["--days", "-30"], ["--months", "0"], ["--months", "-5"]],
+    ids=["days-zero", "days-negative", "months-zero", "months-negative"],
+)
+def test_subscribe_rejects_non_positive_grants(_cli_db, capsys, extra_args):
+    """Fat-finger guardrail: a negative/zero grant must not silently shrink paid time —
+    reducing/revoking is deliberate-only via the absolute --until."""
+    email = "guard@example.com"
+    horizon = datetime.now(UTC) + timedelta(days=200)
+    user_id = _seed_user(_cli_db, email, subscriber_until=horizon)
+    assert main(["user", "subscribe", email, *extra_args]) == 2
+    assert "--until" in capsys.readouterr().err
+    with _cli_db.get_session() as session:
+        assert session.get(User, user_id).subscriber_until == horizon
+
+
 def test_payments_list_unmatched_filters_out_matched_rows(_cli_db, capsys):
     user_id = _seed_user(_cli_db, "matched@example.com")
     _seed_payment(
