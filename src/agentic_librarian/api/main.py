@@ -25,6 +25,7 @@ from agentic_librarian.api.books import router as books_router
 from agentic_librarian.api.firebase_auth_proxy import router as firebase_auth_proxy_router
 from agentic_librarian.api.imports import router as imports_router
 from agentic_librarian.api.internal import router as internal_router
+from agentic_librarian.api.kofi import router as kofi_router
 from agentic_librarian.api.libraries import router as libraries_router
 from agentic_librarian.api.recommendations import router as recommendations_router
 from agentic_librarian.chat import stream, transcript
@@ -122,6 +123,7 @@ api_router.include_router(libraries_router)
 # break fixed contracts (Firebase /__/auth/*) or Cloud Tasks target URLs (/internal/*).
 app.include_router(firebase_auth_proxy_router)
 app.include_router(internal_router)
+app.include_router(kofi_router)
 
 
 @app.get("/health")
