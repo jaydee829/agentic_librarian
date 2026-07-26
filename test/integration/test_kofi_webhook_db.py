@@ -117,6 +117,8 @@ def test_annual_tier_name_grants_370_days(client, db_url):
         expected_max = before_call + timedelta(days=370) + SLACK
         assert expected_min <= refreshed.subscriber_until <= expected_max
         assert payment.entitlement_days == 370
+        assert payment.tier_name == "Annual"
+        assert payment.is_subscription_payment is True
 
 
 def test_tip_below_threshold_is_recorded_without_entitlement(client, db_url):
@@ -144,14 +146,25 @@ def test_tip_below_threshold_is_recorded_without_entitlement(client, db_url):
         assert payment.amount == Decimal("3.00")
 
 
-def test_unknown_email_is_unmatched(client):
+def test_unknown_email_is_unmatched(client, db_url):
+    """The JSON response is only the delivery ack; the payments row is the durable
+    evidence the operator's `payments match` fallback actually depends on (CLAUDE.md
+    assertion-completeness rule #1) — assert the row directly, not just the ack body."""
+    db = DatabaseManager(db_url)
     resp = _post(
         client,
         kofi_transaction_id="unmatched-txn",
-        email="nobody-here@example.com",
+        email="Nobody-Here@Example.com",
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "unmatched", "kind": "monthly"}
+
+    with db.get_session() as session:
+        payment = session.query(Payment).filter(Payment.kofi_transaction_id == "unmatched-txn").first()
+        assert payment is not None
+        assert payment.matched_user_id is None
+        assert payment.entitlement_days == 0
+        assert payment.email == "nobody-here@example.com"  # lowercased at ingest
 
 
 def test_same_txn_replay_is_duplicate_no_second_row_no_double_extend(client, db_url):

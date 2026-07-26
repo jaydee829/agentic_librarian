@@ -5,6 +5,9 @@ tiny-app-with-just-the-router pattern — no real DB, no real app lifespan."""
 
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -27,6 +30,39 @@ class _RaisingSessionManager:
 
     def get_session(self):
         raise RuntimeError("db unavailable")
+
+
+class _FakeQuery:
+    """Minimal chainable stand-in for a SQLAlchemy Query: every filter() no-ops, first()
+    always reports 'nothing found' (no duplicate row, no matched user)."""
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return None
+
+
+class _FakeSession:
+    def query(self, *args, **kwargs):
+        return _FakeQuery()
+
+    def add(self, obj):
+        pass
+
+    def flush(self):
+        pass
+
+
+class _WorkingSessionManager:
+    """Stands in for DatabaseManager: get_session() yields a working fake session (the
+    _RaisingSessionManager's pattern inverted) so a handler run can reach a 2xx without a
+    real DB — used for the non-finite-amount guard, which must survive all the way to the
+    DB-write branch rather than crash in entitlements.classify() first."""
+
+    @contextmanager
+    def get_session(self):
+        yield _FakeSession()
 
 
 def _client() -> TestClient:
@@ -74,3 +110,38 @@ def test_db_layer_error_after_valid_token_is_500(monkeypatch):
     payload = f'{{"verification_token": "{VALID_TOKEN}", "kofi_transaction_id": "t1"}}'
     resp = _client().post("/webhooks/kofi", data={"data": payload})
     assert resp.status_code == 500
+
+
+@pytest.mark.parametrize(
+    "amount_str",
+    [
+        pytest.param("nan", id="amount-nan"),
+        pytest.param("-nan", id="amount-negative-nan"),
+        pytest.param("Infinity", id="amount-infinity"),
+    ],
+)
+def test_non_finite_amount_does_not_crash_classify(monkeypatch, amount_str):
+    """Decimal("nan")/Decimal("-nan")/Decimal("Infinity") all parse WITHOUT raising
+    InvalidOperation, so the handler's own try/except around Decimal(...) never catches
+    them. Without an explicit is_finite() guard, entitlements.classify()'s
+    `amount >= threshold` ordering comparison raises decimal.InvalidOperation on a
+    non-finite operand -> an uncaught 500 BEFORE the event is durably stored, and since
+    Ko-fi retries non-2xx responses with the SAME payload, that crash would repeat
+    forever. Uses a working fake session (not the 500 test's raising one) so the request
+    reaches the DB-write branch and actually returns 2xx."""
+    monkeypatch.setenv("KOFI_VERIFICATION_TOKEN", VALID_TOKEN)
+    kofi.set_db_manager(_WorkingSessionManager())
+    payload = json.dumps(
+        {
+            "verification_token": VALID_TOKEN,
+            "kofi_transaction_id": f"txn-{amount_str}",
+            "amount": amount_str,
+            # No email -> no User lookup needed from the fake session; the payment still
+            # goes through the add()/flush() write path and lands on "unmatched".
+        }
+    )
+    resp = _client().post("/webhooks/kofi", data={"data": payload})
+    assert resp.status_code == 200
+    # Non-finite amount is clamped to 0 -> classifies as a tip (amount 0 < the annual
+    # threshold, no tier_name, not a subscription payment).
+    assert resp.json() == {"status": "unmatched", "kind": "tip"}
