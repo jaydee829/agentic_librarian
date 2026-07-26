@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
     mcp_server.set_db_manager(shared)
     two_phase.set_db_manager(shared)
     imports_worker.set_db_manager(shared)
+    budgets.set_db_manager(shared)
     yield
 
 

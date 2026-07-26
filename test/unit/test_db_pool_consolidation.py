@@ -9,6 +9,7 @@ from agentic_librarian.api import auth as auth_mod
 from agentic_librarian.api import main as main_mod
 from agentic_librarian.api import recommendations as recommendations_mod
 from agentic_librarian.chat import transcript as transcript_mod
+from agentic_librarian.core import budgets as budgets_mod
 from agentic_librarian.core import usage as usage_mod
 
 
@@ -22,6 +23,7 @@ def _restore_db_managers():
         usage_mod.db_manager,
         recommendations_mod.db_manager,
         analysis_mod.db_manager,
+        budgets_mod.db_manager,
     )
     yield
     (
@@ -31,6 +33,7 @@ def _restore_db_managers():
         usage_mod.db_manager,
         recommendations_mod.db_manager,
         analysis_mod.db_manager,
+        budgets_mod.db_manager,
     ) = saved
 
 
@@ -45,3 +48,4 @@ def test_startup_consolidates_api_pools(_restore_db_managers):
         assert usage_mod.db_manager is shared
         assert recommendations_mod.db_manager is shared
         assert analysis_mod.db_manager is shared
+        assert budgets_mod.db_manager is shared
