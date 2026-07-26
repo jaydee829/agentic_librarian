@@ -1,9 +1,10 @@
+import asyncio
 import os
 
 import pytest
 from google.genai import types
 
-from agentic_librarian.agents import runtime
+from agentic_librarian.agents import runtime, services
 from agentic_librarian.agents.services import create_agent_mesh
 
 
@@ -232,3 +233,92 @@ def test_explorer_discovers_real_books():
     response = conv.send("Find grimdark fantasy novels published in 2024. List each title and author.")
     assert isinstance(response, str)
     assert len(response.strip()) > 30
+
+
+# --- arc 3/3 BYOK: key threading through the chat mesh ---
+
+
+def test_gemini_without_api_key_constructs_a_plain_gemini():
+    # Unchanged from before this arc: no api_key kwarg means the model reads the app's
+    # process-wide GOOGLE_API_KEY (set by the autouse _adk_key fixture in tests).
+    model = services._gemini("model-x")
+    assert type(model) is services.Gemini
+    assert model.model == "model-x"
+
+
+def test_gemini_with_api_key_binds_a_client_to_that_key():
+    # ADK's Gemini (google-adk 2.2.0) has no api_key field of its own — a plain
+    # `Gemini(api_key=...)` kwarg is silently dropped. _gemini must route through the
+    # documented api_client-override extension point (_ByokGemini) instead, or the byok
+    # key never actually reaches google.genai.Client.
+    model = services._gemini("model-x", api_key="user-secret-key")
+    assert isinstance(model, services._ByokGemini)
+    assert model.model == "model-x"
+    assert model.byok_api_key == "user-secret-key"
+    assert model.api_client.models._api_client.api_key == "user-secret-key"
+
+
+@pytest.mark.parametrize(
+    "api_key",
+    [pytest.param("user-secret-key", id="byok_key_threaded"), pytest.param(None, id="app_key_default")],
+)
+def test_create_agent_mesh_threads_api_key_to_every_agent(monkeypatch, api_key):
+    calls = []
+
+    def fake_gemini(model_name, key=None):
+        calls.append((model_name, key))
+        return services.Gemini(model=model_name)
+
+    monkeypatch.setattr(services, "_gemini", fake_gemini)
+    services.create_agent_mesh(api_key=api_key)
+    # Analyst, Explorer (the grounding model too), Critic, Librarian.
+    assert len(calls) == 4
+    assert all(key == api_key for _, key in calls)
+
+
+def test_build_runner_threads_api_key_into_create_agent_mesh(monkeypatch):
+    captured = {}
+
+    def fake_create_agent_mesh(api_key=None):
+        captured["api_key"] = api_key
+        return create_agent_mesh()
+
+    monkeypatch.setattr(runtime, "create_agent_mesh", fake_create_agent_mesh)
+    runtime.build_runner(api_key="byok-key")
+    assert captured["api_key"] == "byok-key"
+
+
+def test_astart_conversation_threads_api_key_into_build_runner_when_no_runner_given(monkeypatch):
+    captured = {}
+
+    def fake_build_runner(api_key=None):
+        captured["api_key"] = api_key
+        return _FakeRunner()
+
+    monkeypatch.setattr(runtime, "build_runner", fake_build_runner)
+    asyncio.run(runtime.astart_conversation(user_id="u", session_id="s", api_key="byok-key"))
+    assert captured["api_key"] == "byok-key"
+
+
+def test_astart_conversation_does_not_rebuild_an_explicitly_passed_runner(monkeypatch):
+    # A caller-supplied runner's mesh is already fixed — api_key threading only applies
+    # when astart_conversation builds the runner itself.
+    def fail_build_runner(api_key=None):
+        raise AssertionError("build_runner must not be called when a runner is passed")
+
+    monkeypatch.setattr(runtime, "build_runner", fail_build_runner)
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s", api_key="byok-key"))
+    assert conv is not None
+
+
+def test_astart_conversation_carries_key_source_onto_the_conversation():
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s", key_source="byok"))
+    assert conv.key_source == "byok"
+
+
+def test_astart_conversation_key_source_defaults_to_app():
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s"))
+    assert conv.key_source == "app"

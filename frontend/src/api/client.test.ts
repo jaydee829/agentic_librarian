@@ -68,26 +68,15 @@ describe('api client', () => {
     expect(detail).toBe('boom')
   })
 
-  it('streamChat surfaces the 429 quota detail message', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: { code: 'chat_quota', message: 'Daily limit reached.' } }), {
-        status: 429,
-      }),
-    )
+  it.each([
+    { status: 429, code: 'chat_quota', message: 'Daily limit reached.' },
+    { status: 422, code: 'message_too_long', message: 'Message too long.' },
+    { status: 409, code: 'byok_key_error', message: 'Your API key failed — check Settings.' },
+  ])('streamChat surfaces the $status $code detail message', async ({ status, code, message }) => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ detail: { code, message } }), { status }))
     let detail = ''
     await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
-    expect(detail).toBe('Daily limit reached.')
-  })
-
-  it('streamChat surfaces the 422 message-too-long detail message', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(
-      new Response(JSON.stringify({ detail: { code: 'message_too_long', message: 'Message too long.' } }), {
-        status: 422,
-      }),
-    )
-    let detail = ''
-    await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
-    expect(detail).toBe('Message too long.')
+    expect(detail).toBe(message)
   })
 
   it('streamChat falls back to the generic copy on a 500', async () => {

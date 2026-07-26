@@ -12,7 +12,14 @@ import pytest
 from agentic_librarian.core.user_context import DEFAULT_USER_ID, as_user, get_required_user_id
 
 
-def test_adk_conversation_records_usage(monkeypatch):
+@pytest.mark.parametrize(
+    "key_source",
+    [pytest.param("app", id="app_key_default"), pytest.param("byok", id="byok_key_threaded")],
+)
+def test_adk_conversation_records_usage(monkeypatch, key_source):
+    # arc 3/3: LibrarianConversation carries key_source as an instance attribute (never
+    # module-global state — concurrent turns from different users can be in flight at
+    # once) and _record_event_usage must thread it into the recorded row.
     calls = []
     monkeypatch.setattr("agentic_librarian.agents.runtime.record_llm_call", lambda **kw: calls.append(kw))
 
@@ -31,7 +38,7 @@ def test_adk_conversation_records_usage(monkeypatch):
 
     from agentic_librarian.agents.runtime import LibrarianConversation
 
-    convo = LibrarianConversation(FakeRunner(), "local", uuid4().hex)
+    convo = LibrarianConversation(FakeRunner(), "local", uuid4().hex, key_source=key_source)
     assert convo.send("hi") == "(no response)"
     assert calls == [
         {
@@ -40,6 +47,7 @@ def test_adk_conversation_records_usage(monkeypatch):
             "input_tokens": 10,
             "output_tokens": 4,
             "conversation_id": convo.conversation_id,
+            "key_source": key_source,
         }
     ]
 

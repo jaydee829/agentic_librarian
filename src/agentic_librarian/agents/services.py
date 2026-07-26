@@ -56,9 +56,54 @@ def _grounding_model() -> str:
     return os.environ.get("GROUNDING_MODEL") or os.environ.get("EXPLORER_MODEL") or "gemini-2.5-flash"
 
 
-def _gemini(model_name: str) -> Gemini:
+class _ByokGemini(Gemini):
+    """A Gemini model bound to one byok user's key (arc 3/3). ADK's Gemini (google-adk
+    2.2.0, verified against the installed package) has NO `api_key` field of its own —
+    passing `api_key=` to its constructor is silently dropped (pydantic extra='ignore'),
+    and its `api_client` cached_property builds a `google.genai.Client()` that reads
+    `GOOGLE_API_KEY` from the process environment when no key is given. That is exactly
+    the global mutable state the spec forbids per-request (`_ensure_adk_credentials`'s
+    own docstring: a per-request env swap races across concurrent turns). The class's
+    own docstring names `api_client` as the sanctioned subclass-override extension point
+    for exactly this ("Customizing the underlying Client"), so this mirrors its default
+    `api_client` construction (headers/retry/base_url/api_version) and adds only
+    `api_key`, reusing the parent's private helpers rather than guessing at them. If a
+    future google-adk changes that construction, this needs a matching update — there is
+    no public per-instance-credential seam as of 2.2.0."""
+
+    byok_api_key: str
+
+    @functools.cached_property
+    def api_client(self):
+        from google.genai import Client
+        from google.genai import types as genai_types
+
+        base_url, api_version = self._base_url_and_api_version
+        http_kwargs: dict = {
+            "headers": self._tracking_headers(),
+            "retry_options": self.retry_options,
+            "base_url": base_url,
+        }
+        if api_version:
+            http_kwargs["api_version"] = api_version
+        client_kwargs: dict = {
+            "http_options": genai_types.HttpOptions(**http_kwargs),
+            "api_key": self.byok_api_key,
+        }
+        if self.model.startswith("projects/"):
+            client_kwargs["vertexai"] = True
+        return Client(**client_kwargs)
+
+
+def _gemini(model_name: str, api_key: str | None = None) -> Gemini:
     """Wrap a model id in an ADK Gemini model carrying the shared transient-error retry config, so
-    every mesh agent rides through 429/5xx demand spikes instead of crashing the run (REC-020)."""
+    every mesh agent rides through 429/5xx demand spikes instead of crashing the run (REC-020).
+
+    api_key (arc 3/3 BYOK): when given, returns a `_ByokGemini` bound to that user's key
+    (see its docstring for why a plain `api_key=` kwarg doesn't work on this ADK version).
+    `api_key=None` (the default / non-byok path) is BYTE-IDENTICAL to before this arc."""
+    if api_key is not None:
+        return _ByokGemini(model=model_name, retry_options=RETRY_OPTIONS, byok_api_key=api_key)
     return Gemini(model=model_name, retry_options=RETRY_OPTIONS)
 
 
@@ -68,9 +113,9 @@ def _gemini(model_name: str) -> Gemini:
 class AnalystAgent(LlmAgent):
     """The Strategist. Decomposes vibes into structured tropes/styles and manages User Profile."""
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None):
         super().__init__(
-            model=_gemini(_model_name()),
+            model=_gemini(_model_name(), api_key),
             name="Analyst",
             description="Specializes in extracting structured book attributes and analyzing user taste.",
             instruction=prompts.ANALYST_INSTRUCTION,
@@ -83,9 +128,9 @@ class AnalystAgent(LlmAgent):
 class ExplorerAgent(LlmAgent):
     """The Scout. External web discovery via grounded search (ADR-035)."""
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None):
         super().__init__(
-            model=_gemini(_grounding_model()),
+            model=_gemini(_grounding_model(), api_key),
             name="Explorer",
             description="Discovers new/recent books from the web using grounded search.",
             instruction=prompts.EXPLORER_INSTRUCTION,
@@ -105,9 +150,9 @@ class CriticAgent(LlmAgent):
     response is written to session state under that key so the pipeline can read it. The
     conversational mesh constructs it without an output_key (it reads the AgentTool return value)."""
 
-    def __init__(self, output_key: str | None = None):
+    def __init__(self, output_key: str | None = None, api_key: str | None = None):
         super().__init__(
-            model=_gemini(_model_name()),
+            model=_gemini(_model_name(), api_key),
             name="Critic",
             description="Ranks book candidates using vector similarity and ensures no duplicates in history.",
             instruction=prompts.CRITIC_INSTRUCTION,
@@ -221,9 +266,9 @@ ADK_LIBRARIAN_INSTRUCTION = """
 class LibrarianAgent(LlmAgent):
     """The Orchestrator. Manages delegation and conversational feedback."""
 
-    def __init__(self, analyst, explorer, critic):
+    def __init__(self, analyst, explorer, critic, api_key: str | None = None):
         super().__init__(
-            model=_gemini(_model_name()),
+            model=_gemini(_model_name(), api_key),
             name="Librarian",
             description="The entry point for users. Orchestrates the recommendation process.",
             instruction=ADK_LIBRARIAN_INSTRUCTION,
@@ -246,13 +291,17 @@ class LibrarianAgent(LlmAgent):
 # --- THE MESH FACTORY ---
 
 
-def create_agent_mesh():
-    """Initializes and connects the agents using the AgentTool delegation pattern."""
-    analyst = AnalystAgent()
-    explorer = ExplorerAgent()
-    critic = CriticAgent()
+def create_agent_mesh(api_key: str | None = None):
+    """Initializes and connects the agents using the AgentTool delegation pattern.
+
+    api_key (arc 3/3 BYOK): threaded into every agent's model construction, including
+    the Explorer's grounding model — a byok user's chat turn runs entirely on their own
+    key. `api_key=None` (default) is unchanged from before this arc."""
+    analyst = AnalystAgent(api_key=api_key)
+    explorer = ExplorerAgent(api_key=api_key)
+    critic = CriticAgent(api_key=api_key)
 
     # The Librarian is initialized with its staff of specialists
-    librarian = LibrarianAgent(analyst=analyst, explorer=explorer, critic=critic)
+    librarian = LibrarianAgent(analyst=analyst, explorer=explorer, critic=critic, api_key=api_key)
 
     return {"librarian": librarian, "analyst": analyst, "explorer": explorer, "critic": critic}

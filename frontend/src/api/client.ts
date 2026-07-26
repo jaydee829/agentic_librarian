@@ -268,7 +268,7 @@ export async function streamChat(message: string, handlers: ChatHandlers): Promi
     return
   }
   if (!res.ok || !res.body) {
-    if (res.status === 429 || res.status === 422) {
+    if (res.status === 429 || res.status === 422 || res.status === 409) {
       let message = ''
       try {
         const body = await res.json()
