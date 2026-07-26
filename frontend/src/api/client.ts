@@ -257,6 +257,17 @@ export async function streamChat(message: string, handlers: ChatHandlers): Promi
     return
   }
   if (!res.ok || !res.body) {
+    if (res.status === 429 || res.status === 422) {
+      let message = ''
+      try {
+        const body = await res.json()
+        message = body?.detail?.message ?? ''
+      } catch {
+        // fall through to the generic copy
+      }
+      handlers.onError(message || GENERIC_CHAT_ERROR)
+      return
+    }
     handlers.onError(GENERIC_CHAT_ERROR)
     return
   }

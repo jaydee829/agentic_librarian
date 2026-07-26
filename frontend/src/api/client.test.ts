@@ -67,6 +67,35 @@ describe('api client', () => {
     await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
     expect(detail).toBe('boom')
   })
+
+  it('streamChat surfaces the 429 quota detail message', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: { code: 'chat_quota', message: 'Daily limit reached.' } }), {
+        status: 429,
+      }),
+    )
+    let detail = ''
+    await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
+    expect(detail).toBe('Daily limit reached.')
+  })
+
+  it('streamChat surfaces the 422 message-too-long detail message', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: { code: 'message_too_long', message: 'Message too long.' } }), {
+        status: 422,
+      }),
+    )
+    let detail = ''
+    await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
+    expect(detail).toBe('Message too long.')
+  })
+
+  it('streamChat falls back to the generic copy on a 500', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('boom', { status: 500 }))
+    let detail = ''
+    await streamChat('hi', { onActivity: () => {}, onText: () => {}, onError: (d) => (detail = d) })
+    expect(detail).toBe('The Librarian hit a problem. Please try again.')
+  })
 })
 
 describe('addBook', () => {
