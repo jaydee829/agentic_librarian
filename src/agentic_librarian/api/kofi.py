@@ -56,7 +56,10 @@ def kofi_webhook(data: str = Form(...)):  # noqa: B008
         # "nan"/"-nan"/"Infinity" parse successfully (no InvalidOperation above) but crash
         # entitlements.classify()'s `amount >= threshold` ordering comparison.
         amount = Decimal(0)
-    tier_name = event.get("tier_name") or None
+    # str-coerce like the sibling fields: a non-string tier_name would crash classify()'s
+    # .strip().casefold() before the event is persisted (same class as the amount guard).
+    raw_tier = event.get("tier_name")
+    tier_name = str(raw_tier) if raw_tier else None
     is_sub = bool(event.get("is_subscription_payment", False))
     kofi_type = str(event.get("type") or "")
 

@@ -145,3 +145,31 @@ def test_non_finite_amount_does_not_crash_classify(monkeypatch, amount_str):
     # Non-finite amount is clamped to 0 -> classifies as a tip (amount 0 < the annual
     # threshold, no tier_name, not a subscription payment).
     assert resp.json() == {"status": "unmatched", "kind": "tip"}
+
+
+@pytest.mark.parametrize(
+    "raw_tier,expected_kind",
+    [
+        pytest.param(123, "tip", id="tier-name-int"),
+        pytest.param(["annual"], "tip", id="tier-name-list"),
+        pytest.param("Annual", "annual", id="tier-name-string-still-classifies"),
+    ],
+)
+def test_non_string_tier_name_does_not_crash_classify(monkeypatch, raw_tier, expected_kind):
+    """Same failure class as the non-finite amount: an attacker-shaped non-string
+    tier_name would crash classify()'s .strip().casefold() before the event is
+    persisted -> deterministic 500 retried forever. The handler str-coerces it like
+    the sibling fields (a coerced "123" simply matches no annual tier name)."""
+    monkeypatch.setenv("KOFI_VERIFICATION_TOKEN", VALID_TOKEN)
+    kofi.set_db_manager(_WorkingSessionManager())
+    payload = json.dumps(
+        {
+            "verification_token": VALID_TOKEN,
+            "kofi_transaction_id": f"txn-tier-{expected_kind}-{type(raw_tier).__name__}",
+            "amount": "5.00",
+            "tier_name": raw_tier,
+        }
+    )
+    resp = _client().post("/webhooks/kofi", data={"data": payload})
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "unmatched", "kind": expected_kind}
