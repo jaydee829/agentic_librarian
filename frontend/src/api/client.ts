@@ -422,6 +422,40 @@ export async function saveMyLibraries(libraries: SavedLibrary[]): Promise<void> 
   if (!res.ok) throw new Error(`save libraries → ${res.status}`)
 }
 
+export interface CredentialsStatus {
+  configured: boolean
+  updated_at: string | null
+}
+
+export function getCredentials(): Promise<CredentialsStatus> {
+  return getJson<CredentialsStatus>('/me/credentials')
+}
+
+export async function putCredentials(apiKey: string): Promise<void> {
+  const res = await authedFetchRaw('/me/credentials', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+  if (!res.ok) {
+    // Error bodies here are {"detail": {"code": ..., "message": ...}} — the same
+    // object-shaped detail as the chat 429/422/409 path and commitImport's 413/409.
+    let detail = `/me/credentials → ${res.status}`
+    try {
+      const parsed = await res.json()
+      if (typeof parsed?.detail?.message === 'string') detail = parsed.detail.message
+    } catch {
+      // non-JSON error body — keep the generic detail
+    }
+    throw new ApiError(res.status, detail)
+  }
+}
+
+export async function deleteCredentials(): Promise<void> {
+  const res = await authedFetchRaw('/me/credentials', { method: 'DELETE' })
+  if (!res.ok) throw new Error(`/me/credentials → ${res.status}`)
+}
+
 function dispatchFrame(frame: string, handlers: ChatHandlers): void {
   let event = 'message'
   let data = ''

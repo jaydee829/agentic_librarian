@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import { useAuth } from '../auth/AuthContext'
 import { getAccount, type Account } from '../api/client'
 
 const KOFI_URL = 'https://ko-fi.com/shelfwright'
 
-/** Account dropdown off the top-bar avatar. Future home of username change and the
- *  BYOK entry (arc PR 3). Sign-out must never depend on the API: account fetch failure
- *  just hides the status line. */
+/** Account dropdown off the top-bar avatar. Sign-out must never depend on the API:
+ *  account fetch failure just hides the status line. */
 export default function AccountMenu() {
   const { user, signOut } = useAuth()
   const [open, setOpen] = useState(false)
@@ -36,9 +36,11 @@ export default function AccountMenu() {
   const status =
     account?.tier === 'supporter' && account.subscriber_until
       ? `Supporter until ${new Date(account.subscriber_until).toLocaleDateString()}`
-      : account?.tier === 'free'
-        ? 'Free plan'
-        : null
+      : account?.tier === 'byok'
+        ? 'Using your own key'
+        : account?.tier === 'free'
+          ? 'Free plan'
+          : null
 
   return (
     <div className="account-menu" ref={rootRef}>
@@ -68,6 +70,7 @@ export default function AccountMenu() {
             </div>
           </div>
           <hr />
+          <Link to="/settings" role="menuitem" onClick={() => setOpen(false)}>API key settings</Link>
           <button role="menuitem" onClick={() => void signOut()}>Sign out</button>
         </div>
       )}
