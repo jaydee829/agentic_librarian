@@ -69,7 +69,13 @@ class _ByokGemini(Gemini):
     `api_client` construction (headers/retry/base_url/api_version) and adds only
     `api_key`, reusing the parent's private helpers rather than guessing at them. If a
     future google-adk changes that construction, this needs a matching update — there is
-    no public per-instance-credential seam as of 2.2.0."""
+    no public per-instance-credential seam as of 2.2.0.
+
+    NON-GOAL: this does NOT override `_live_api_client` (the live/bidi-streaming
+    connection path). Nothing in this codebase configures ADK's live/bidi mode today, so
+    it is unreachable — but a future live-chat feature built on this class would silently
+    read `GOOGLE_API_KEY` (the app key) for that path unless `_live_api_client` is given
+    the same treatment as `api_client` here."""
 
     byok_api_key: str
 

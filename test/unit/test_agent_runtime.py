@@ -258,6 +258,48 @@ def test_gemini_with_api_key_binds_a_client_to_that_key():
     assert model.api_client.models._api_client.api_key == "user-secret-key"
 
 
+def test_gemini_byok_generate_content_async_actually_uses_the_byok_client(monkeypatch):
+    """Behavioral canary (task-3 review): the construction-level test above proves
+    `.api_client` is BOUND to the byok key, but that alone doesn't prove ADK's REAL call
+    path reads `self.api_client` at call time — a future google-adk (pinned
+    `>=2.1.0`, unbounded — CI resolves fresh) could route `generate_content_async`
+    through a different attribute or a module-level client, and this would silently
+    fall back to the app key while the construction test above kept passing. This drives
+    the actual entry point the mesh calls (`generate_content_async`), mocking only the
+    network boundary (`AsyncModels.generate_content`), and fails loudly the moment a
+    future ADK version stops consulting `self.api_client` for the real call."""
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types as genai_types
+
+    model = services._gemini("model-x", api_key="canary-byok-key")
+    client = model.api_client  # forces construction; api_client is cached, so the real
+    # call below reuses this exact instance — not a fresh one.
+    assert client.models._api_client.api_key == "canary-byok-key"
+
+    captured: dict = {}
+
+    async def fake_generate_content(*, model, contents, config):
+        # The real network boundary. Read the key off the client instance that is
+        # actually executing the call — not off `model`/`_gemini`'s return value — so
+        # this fails if a future ADK routes the call through some OTHER client.
+        captured["key"] = client.models._api_client.api_key
+        return genai_types.GenerateContentResponse()
+
+    monkeypatch.setattr(client.aio.models, "generate_content", fake_generate_content)
+
+    llm_request = LlmRequest(
+        model="model-x", contents=[genai_types.Content(role="user", parts=[genai_types.Part(text="hi")])]
+    )
+
+    async def _drive():
+        return [r async for r in model.generate_content_async(llm_request)]
+
+    responses = asyncio.run(_drive())
+
+    assert captured.get("key") == "canary-byok-key"
+    assert responses  # the fake response was consumed all the way to an LlmResponse
+
+
 @pytest.mark.parametrize(
     "api_key",
     [pytest.param("user-secret-key", id="byok_key_threaded"), pytest.param(None, id="app_key_default")],
