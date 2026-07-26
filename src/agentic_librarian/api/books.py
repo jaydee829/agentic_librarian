@@ -72,7 +72,7 @@ def add_book(req: AddBookRequest, user: AuthenticatedUser = Depends(get_current_
     if created:
         # A failed enqueue must not fail the add — the book is already saved.
         try:
-            enqueued = enqueue_enrichment(str(work_id))
+            enqueued = enqueue_enrichment(str(work_id), user_id=str(user.id))
         except Exception:  # noqa: BLE001 - enqueue is best-effort; deep pass can be retried later
             logger.exception("deep-enrichment enqueue failed for work %s", work_id)
 

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import internal as internal_mod
 from agentic_librarian.api import main as api_main
+from agentic_librarian.core.user_context import get_required_user_id
 from agentic_librarian.db.models import Author, Edition, Trope, Work, WorkContributor, WorkTrope
 from agentic_librarian.db.session import DatabaseManager
 from agentic_librarian.enrichment import two_phase
@@ -63,6 +64,54 @@ def test_valid_queue_token_runs_deep_enrich(client, db_url, monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(work_id), "status": "enriched"}
     assert str(called["wid"]) == str(work_id)
+
+
+def test_valid_queue_token_with_user_id_runs_deep_enrich_attributed(client, db_url, monkeypatch):
+    """#100: the queue may pass ?user_id=<uuid> so the deep pass's LLM usage bills the
+    requesting user. as_user(...) wraps the call, so get_required_user_id() resolves inside
+    enrich_deep — this is the probe (patched at the handler's call site, per house pattern)."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    monkeypatch.setattr(
+        internal_mod, "_verify_oidc", lambda token, audience: {"email": QUEUE_SA, "email_verified": True}
+    )
+    seen = {}
+
+    def _fake_enrich_deep(wid):
+        seen["user_id"] = get_required_user_id()
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+    caller_id = uuid4()
+
+    resp = client.post(f"/internal/enrich/{work_id}?user_id={caller_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert seen["user_id"] == caller_id
+
+
+def test_valid_queue_token_without_user_id_runs_deep_enrich_unattributed(client, db_url, monkeypatch):
+    """Back-compat guarantee: pre-#100 (or requeue-sweep) tasks carry no user_id and must
+    still succeed, with no user identity in context (metering skips, nothing crashes)."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    monkeypatch.setattr(
+        internal_mod, "_verify_oidc", lambda token, audience: {"email": QUEUE_SA, "email_verified": True}
+    )
+    seen = {}
+
+    def _fake_enrich_deep(wid):
+        seen["raised"] = False
+        try:
+            get_required_user_id()
+        except RuntimeError:
+            seen["raised"] = True
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+
+    resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert seen["raised"] is True  # no user in context, exactly as before #100
 
 
 def test_missing_token_is_rejected(client):

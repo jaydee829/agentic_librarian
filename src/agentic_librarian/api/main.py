@@ -373,7 +373,7 @@ def update_history(
     enqueued = False
     if needs_completion:
         try:
-            enqueued = enqueue_edition_completion(work_id_str, fmt_str)
+            enqueued = enqueue_edition_completion(work_id_str, fmt_str, user_id=str(user.id))
         except Exception:  # noqa: BLE001 - enqueue is best-effort
             logger.exception("edition-completion enqueue failed for work %s", work_id_str)
     payload["enrichment_enqueued"] = enqueued

@@ -324,17 +324,23 @@ def test_patch_date_collision_is_409_not_500(two_user_client, db_url):
 
 def test_patch_format_enqueues_completion_for_new_audiobook(two_user_client, monkeypatch):
     calls = []
-    monkeypatch.setattr(api_main, "enqueue_edition_completion", lambda wid, fmt: calls.append((wid, fmt)) or True)
+    monkeypatch.setattr(
+        api_main,
+        "enqueue_edition_completion",
+        lambda wid, fmt, user_id=None: calls.append((wid, fmt, user_id)) or True,
+    )
     client = two_user_client(DEFAULT_USER_ID, "jaydee829@gmail.com")
     entry = _my_entry(client)
     resp = client.patch(f"/api/history/{entry['id']}", json={"format": "audiobook"})
     assert resp.status_code == 200
     assert resp.json()["enrichment_enqueued"] is True
-    assert len(calls) == 1 and calls[0][1] == "audiobook"
+    assert len(calls) == 1
+    assert calls[0][1] == "audiobook"
+    assert calls[0][2] == str(DEFAULT_USER_ID)  # attributed to the authenticated caller (#100)
 
 
 def test_patch_format_enqueue_failure_never_fails_the_edit(two_user_client, monkeypatch):
-    def _boom(wid, fmt):
+    def _boom(wid, fmt, user_id=None):
         raise RuntimeError("tasks down")
 
     monkeypatch.setattr(api_main, "enqueue_edition_completion", _boom)
@@ -356,7 +362,7 @@ def test_patch_format_skips_enqueue_when_edition_complete(two_user_client, db_ur
         s.add(done)
         s.flush()
     calls = []
-    monkeypatch.setattr(api_main, "enqueue_edition_completion", lambda wid, fmt: calls.append(1) or True)
+    monkeypatch.setattr(api_main, "enqueue_edition_completion", lambda wid, fmt, user_id=None: calls.append(1) or True)
     client = two_user_client(DEFAULT_USER_ID, "jaydee829@gmail.com")
     entry = _my_entry(client)
     resp = client.patch(f"/api/history/{entry['id']}", json={"format": "audiobook"})
@@ -367,7 +373,7 @@ def test_patch_format_skips_enqueue_when_edition_complete(two_user_client, db_ur
 
 def test_patch_notes_only_never_enqueues(two_user_client, monkeypatch):
     calls = []
-    monkeypatch.setattr(api_main, "enqueue_edition_completion", lambda wid, fmt: calls.append(1) or True)
+    monkeypatch.setattr(api_main, "enqueue_edition_completion", lambda wid, fmt, user_id=None: calls.append(1) or True)
     client = two_user_client(DEFAULT_USER_ID, "jaydee829@gmail.com")
     entry = _my_entry(client)
     resp = client.patch(f"/api/history/{entry['id']}", json={"notes": "just notes"})

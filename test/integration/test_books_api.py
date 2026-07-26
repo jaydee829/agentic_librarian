@@ -42,7 +42,11 @@ def _stub_fast(monkeypatch, result):
 
 def test_add_book_persists_logs_and_enqueues(client, monkeypatch):
     enqueued = []
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: enqueued.append(wid) or True)
+    monkeypatch.setattr(
+        books_mod,
+        "enqueue_enrichment",
+        lambda wid, user_id=None: enqueued.append((wid, user_id)) or True,
+    )
     _stub_fast(
         monkeypatch,
         {
@@ -63,11 +67,12 @@ def test_add_book_persists_logs_and_enqueues(client, monkeypatch):
     assert body["read_number"] == 1
     assert body["already_logged"] is False
     assert body["enrichment_enqueued"] is True
-    assert enqueued == [body["work_id"]]  # newly created → deep pass enqueued
+    # newly created → deep pass enqueued, attributed to the authenticated caller (#100)
+    assert enqueued == [(body["work_id"], str(DEFAULT_USER_ID))]
 
 
 def test_add_book_not_found_returns_404(client, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _stub_fast(monkeypatch, {})  # scouts find nothing
 
     resp = client.post("/api/books", json={"title": "Nope", "author": "Nobody"})
@@ -76,7 +81,7 @@ def test_add_book_not_found_returns_404(client, monkeypatch):
 
 def test_add_book_rereads_do_not_reenqueue(client, db_url, monkeypatch):
     calls = []
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: calls.append(wid) or True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: calls.append(wid) or True)
     manager = DatabaseManager(db_url)
     with manager.get_session() as s:
         work = Work(title="Dune")
@@ -100,7 +105,7 @@ def test_add_book_rereads_do_not_reenqueue(client, db_url, monkeypatch):
 
 
 def test_add_book_rejects_future_date(client, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _stub_fast(monkeypatch, {"title": "X", "contributors": [{"name": "Y", "role": "Author"}]})
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     resp = client.post("/api/books", json={"title": "X", "author": "Y", "date_completed": tomorrow})
@@ -114,7 +119,7 @@ def test_add_book_rejects_blank_title(client):
 
 def test_add_book_is_user_scoped(client, db_url, monkeypatch):
     # The read-event lands on the authenticated user, not another.
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     other = uuid4()
     manager = DatabaseManager(db_url)
     with manager.get_session() as s:
@@ -131,14 +136,14 @@ def test_add_book_is_user_scoped(client, db_url, monkeypatch):
 
 
 def test_add_book_rejects_boolean_rating(client, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _stub_fast(monkeypatch, {"title": "X", "contributors": [{"name": "Y", "role": "Author"}]})
     resp = client.post("/api/books", json={"title": "X", "author": "Y", "rating": True})
     assert resp.status_code == 422
 
 
 def test_add_book_same_date_reports_already_logged(client, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _stub_fast(
         monkeypatch,
         {"title": "Solaris", "contributors": [{"name": "Stanislaw Lem", "role": "Author"}], "genres": [], "moods": []},
@@ -154,7 +159,7 @@ def test_add_book_same_date_reports_already_logged(client, monkeypatch):
 
 
 def test_add_book_survives_enqueue_failure(client, monkeypatch):
-    def _boom(wid):
+    def _boom(wid, user_id=None):
         raise RuntimeError("cloud tasks down")
 
     monkeypatch.setattr(books_mod, "enqueue_enrichment", _boom)
@@ -187,7 +192,7 @@ def _seed_picked_work(db_url, *, title, author, status="Suggested", user_id=DEFA
 
 def test_add_book_resolves_active_pick(client, db_url, monkeypatch):
     # GH #130 invariant: a book in your history is never simultaneously an active pick.
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     work_id, sug_id = _seed_picked_work(db_url, title="The Fifth Season", author="N. K. Jemisin")
     _stub_fast(
         monkeypatch, {"title": "The Fifth Season", "contributors": [{"name": "N. K. Jemisin", "role": "Author"}]}
@@ -206,7 +211,7 @@ def test_add_book_resolves_active_pick(client, db_url, monkeypatch):
 
 
 def test_add_book_without_pick_reports_not_resolved(client, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _stub_fast(monkeypatch, {"title": "Piranesi", "contributors": [{"name": "Susanna Clarke", "role": "Author"}]})
 
     resp = client.post("/api/books", json={"title": "Piranesi", "author": "Susanna Clarke"})
@@ -217,7 +222,7 @@ def test_add_book_without_pick_reports_not_resolved(client, monkeypatch):
 def test_add_book_duplicate_still_resolves_pick(client, db_url, monkeypatch):
     # The already_logged early-return branch must ALSO resolve (re-adding a book
     # already in history still clears its stale pick).
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     work_id, sug_id = _seed_picked_work(db_url, title="Annihilation", author="Jeff VanderMeer")
     manager = DatabaseManager(db_url)
     with manager.get_session() as s:
@@ -243,7 +248,7 @@ def test_add_book_duplicate_still_resolves_pick(client, db_url, monkeypatch):
 
 def test_add_book_leaves_dismissed_pick_untouched(client, db_url, monkeypatch):
     # Resolution only touches 'Suggested' rows — it never rewrites resolved statuses.
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     _work_id, sug_id = _seed_picked_work(db_url, title="Uprooted", author="Naomi Novik", status="Dismissed")
     _stub_fast(monkeypatch, {"title": "Uprooted", "contributors": [{"name": "Naomi Novik", "role": "Author"}]})
 
@@ -256,7 +261,7 @@ def test_add_book_leaves_dismissed_pick_untouched(client, db_url, monkeypatch):
 
 
 def test_add_book_leaves_other_users_pick_untouched(client, db_url, monkeypatch):
-    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid: True)
+    monkeypatch.setattr(books_mod, "enqueue_enrichment", lambda wid, user_id=None: True)
     other = uuid4()
     manager = DatabaseManager(db_url)
     with manager.get_session() as s:

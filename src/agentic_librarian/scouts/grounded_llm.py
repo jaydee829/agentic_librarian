@@ -11,6 +11,8 @@ from typing import Protocol, runtime_checkable
 
 from google import genai
 
+from agentic_librarian.core.tiers import grounding_model_name
+from agentic_librarian.core.usage import record_llm_call
 from agentic_librarian.llm_retry import genai_http_options
 
 
@@ -34,14 +36,28 @@ def _extract_text(response) -> str | None:
     return "".join(texts) if texts else None
 
 
+def _record_gemini_usage(model_name: str, response) -> None:
+    """Meter at the RESPONSE object (#100): the SDK's HTTP-level 429/5xx retry must not
+    double-count; scout-level retries are genuinely separate billable calls and each
+    records via its own response. record_llm_call never raises (warns + drops when no
+    user is in context, e.g. pre-#100 queued tasks)."""
+    um = getattr(response, "usage_metadata", None)
+    if um is None:
+        return
+    record_llm_call(
+        "gemini",
+        model_name,
+        int(getattr(um, "prompt_token_count", 0) or 0),
+        int(getattr(um, "candidates_token_count", 0) or 0),
+    )
+
+
 class GeminiGroundedLLM:
     """Grounded generation via Gemini's google_search tool — the prior scout behavior, relocated."""
 
     def __init__(self, api_key: str | None = None, model_name: str | None = None):
         self.api_key = api_key or os.environ.get("GOOGLE_SEARCH_API_KEY")
-        self.model_name = (
-            model_name or os.environ.get("GROUNDING_MODEL") or os.environ.get("EXPLORER_MODEL") or "gemini-2.5-flash"
-        )
+        self.model_name = model_name or grounding_model_name()
         self._client = genai.Client(api_key=self.api_key, http_options=genai_http_options())
 
     def generate(self, prompt: str, grounded: bool = True) -> str:
@@ -51,6 +67,7 @@ class GeminiGroundedLLM:
             contents=prompt,
             config={"tools": [{"google_search": {}}] if use_grounding else []},
         )
+        _record_gemini_usage(self.model_name, response)
         return _extract_text(response) or ""
 
 
@@ -73,6 +90,9 @@ class ClaudeGroundedLLM:
             return asyncio.run(self._agenerate(prompt, grounded))
         # Called from within a running event loop (async test runner / framework): asyncio.run can't
         # run inside one, so offload to a worker thread that gets its own loop.
+        # Known limit, do not fix (#100): ThreadPoolExecutor does not propagate ContextVars, so
+        # usage metering warns+drops on this fallback path — it only runs under async test
+        # runners, never in the scout worker (which always drives the no-running-loop branch).
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -91,6 +111,14 @@ class ClaudeGroundedLLM:
             result_val = getattr(message, "result", None)
             if result_val and isinstance(result_val, str):
                 text = result_val
+            usage = getattr(message, "usage", None)
+            if usage:
+                record_llm_call(
+                    "anthropic",
+                    self.model,
+                    int(usage.get("input_tokens", 0) or 0),
+                    int(usage.get("output_tokens", 0) or 0),
+                )
         return text
 
 

@@ -7,12 +7,14 @@ Idempotent: Cloud Tasks may redeliver, and two_phase.enrich_deep is retry-safe."
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
+from agentic_librarian.core.user_context import as_user
 from agentic_librarian.enrichment import two_phase
 from agentic_librarian.etl.trope_predicate import is_fallback_trope_name
 
@@ -88,9 +90,14 @@ def enrich(
     work_id: UUID,
     authorization: str | None = Header(None),  # noqa: B008
     x_cloudtasks_taskretrycount: str | None = Header(None),  # noqa: B008
+    user_id: UUID | None = Query(None),  # noqa: B008
 ):
     _require_queue_caller(authorization)
-    result = two_phase.enrich_deep(work_id)
+    # Pre-#100 tasks carry no user_id — run un-attributed exactly as before (metering
+    # skips; nothing crashes). Attributed tasks bill the requesting user.
+    ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
+    with ctx:
+        result = two_phase.enrich_deep(work_id)
     if result == "missing":
         # Non-retryable: the work no longer exists. 404 stops Cloud Tasks from retrying.
         raise HTTPException(status_code=404, detail="work not found")
@@ -128,6 +135,7 @@ def complete_edition(
     work_id: UUID,
     format: str = Query(..., max_length=50),  # noqa: B008
     authorization: str | None = Header(None),  # noqa: B008
+    user_id: UUID | None = Query(None),  # noqa: B008
 ):
     """Format-completion pass target (history-format-edit spec). Same OIDC gate as
     /internal/enrich. 'missing' → 404 (non-retryable: work/edition gone); 'empty' and
@@ -140,7 +148,10 @@ def complete_edition(
     A 500 → normal Cloud Tasks retry only fires for a failure OUTSIDE the scout manager
     (persist/DB error) propagating uncaught, never for the scouts merely finding nothing."""
     _require_queue_caller(authorization)
-    result = two_phase.complete_edition(work_id, format)
+    # Pre-#100 tasks carry no user_id — run un-attributed exactly as before.
+    ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
+    with ctx:
+        result = two_phase.complete_edition(work_id, format)
     if result == "missing":
         raise HTTPException(status_code=404, detail="work or edition not found")
     return {"work_id": str(work_id), "format": format, "status": result}

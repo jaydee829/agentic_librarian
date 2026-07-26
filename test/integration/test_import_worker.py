@@ -29,7 +29,7 @@ def wired(db_url, monkeypatch):
     monkeypatch.setattr(worker, "db_manager", manager)
     two_phase.set_db_manager(manager)
     # Never enqueue real Cloud Tasks from the worker in tests.
-    monkeypatch.setattr(worker, "enqueue_enrichment", lambda work_id: True)
+    monkeypatch.setattr(worker, "enqueue_enrichment", lambda work_id, user_id=None: True)
     return manager
 
 
@@ -84,14 +84,21 @@ def test_dedup_links_existing_catalog_work_without_scouts(wired, monkeypatch):
 def test_miss_creates_work_and_enqueues_deep(wired, monkeypatch):
     # Fake the fast scouts so a miss resolves to a created Work deterministically.
     monkeypatch.setattr(two_phase, "enrich_fast", lambda t, a, f="ebook": (_seed_work(wired, t, a), True))
-    enq = {"n": 0}
-    monkeypatch.setattr(worker, "enqueue_enrichment", lambda work_id: enq.__setitem__("n", enq["n"] + 1) or True)
+    enq = {"n": 0, "user_id": None}
+
+    def _fake_enqueue(work_id, user_id=None):
+        enq["n"] += 1
+        enq["user_id"] = user_id
+        return True
+
+    monkeypatch.setattr(worker, "enqueue_enrichment", _fake_enqueue)
     row_id = _make_row(wired, raw_title="New Title", raw_author="New Author")
 
     assert worker.process_import_row(row_id) == "done"
     with wired.get_session() as s:
         assert s.get(ImportRow, row_id).outcome == "created"
     assert enq["n"] == 1
+    assert enq["user_id"] == str(DEFAULT_USER_ID)  # attributed to the row's user (#100)
 
 
 def test_not_found_marks_failed_and_does_not_retry(wired, monkeypatch):
