@@ -1,9 +1,11 @@
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -12,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    Numeric,
     String,
     Table,
     Text,
@@ -331,6 +334,29 @@ class Usage(Base):
     conversation_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True, index=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class Payment(Base):
+    """One row per Ko-fi webhook event (monetization arc 2/3) — the audit trail behind
+    users.subscriber_until. Idempotency key = kofi_transaction_id (Ko-fi retries).
+    matched_user_id NULL = payer email didn't match a user (CLI `payments match` fixes)."""
+
+    __tablename__ = "payments"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, nullable=False)
+    kofi_transaction_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    kofi_type: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False, index=True)  # lowercased at ingest
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String, nullable=False)
+    tier_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_subscription_payment: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    matched_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    entitlement_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
