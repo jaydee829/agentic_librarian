@@ -24,6 +24,10 @@ vi.mock('./views/AddBookView', () => ({ default: () => <div>add-view</div> }))
 vi.mock('./views/HistoryEditView', () => ({ default: () => <div>history-edit-view</div> }))
 vi.mock('./views/ImportView', () => ({ default: () => <div>ImportView</div> }))
 vi.mock('./views/SettingsView', () => ({ default: () => <div>settings-view</div> }))
+// AccountMenu transitively imports api/client -> auth/firebase, whose module-level init
+// throws auth/invalid-api-key in CI (no VITE_FIREBASE_* env there — passes locally only
+// because the dev .env exists). Mock it like the views; its own tests cover it.
+vi.mock('./components/AccountMenu', () => ({ default: () => <div>account-menu</div> }))
 
 import App from './App'
 
