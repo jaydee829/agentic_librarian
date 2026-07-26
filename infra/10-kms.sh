@@ -5,11 +5,11 @@
 set -euo pipefail
 source "$(dirname "$0")/00-config.sh"
 
-gcloud kms keyrings create librarian --location=us-central1 --project="${PROJECT_ID}"
-gcloud kms keys create byok-credentials --location=us-central1 --keyring=librarian \
+gcloud kms keyrings create librarian --location="${REGION}" --project="${PROJECT_ID}"
+gcloud kms keys create byok-credentials --location="${REGION}" --keyring=librarian \
   --purpose=encryption --project="${PROJECT_ID}"
 gcloud kms keys add-iam-policy-binding byok-credentials \
-  --location=us-central1 --keyring=librarian --project="${PROJECT_ID}" \
+  --location="${REGION}" --keyring=librarian --project="${PROJECT_ID}" \
   --member="serviceAccount:${RUNTIME_SA}" \
   --role="roles/cloudkms.cryptoKeyEncrypterDecrypter"
 

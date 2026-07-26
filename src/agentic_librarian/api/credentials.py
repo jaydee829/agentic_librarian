@@ -7,15 +7,20 @@ here — single source of truth)."""
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
 from agentic_librarian.core import byok
 from agentic_librarian.db.models import UserCredential
 from agentic_librarian.db.session import DatabaseManager
+from agentic_librarian.llm_retry import genai_http_options
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 db_manager = DatabaseManager()
@@ -31,16 +36,21 @@ def set_db_manager(new_manager: DatabaseManager) -> None:
 def _validate_key(api_key: str) -> bool:
     """Live probe seam: one free/fast `count_tokens` call proves the key actually
     authenticates against Gemini before we store it. A fresh `genai.Client` per call
-    (never the shared app-key client). ANY exception (auth failure, malformed key,
-    network hiccup) maps to False — tests patch THIS function directly rather than
-    mocking genai.Client."""
+    (never the shared app-key client), with the same shared retry/timeout options every
+    other genai.Client call site uses (llm_retry.genai_http_options) — a bare Client
+    otherwise has no request timeout and could pin the request thread. ANY exception
+    (auth failure, malformed key, network hiccup) maps to False — tests patch THIS
+    function directly rather than mocking genai.Client. The exception TYPE (never the
+    key, never the exception message which can echo request details) is logged so a bad
+    key is distinguishable server-side from a transient network blip."""
     from google import genai
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options=genai_http_options())
         client.models.count_tokens(model="gemini-3.1-flash-lite", contents="ping")
         return True
-    except Exception:  # noqa: BLE001 - any failure means "not a usable key"
+    except Exception as e:  # noqa: BLE001 - any failure means "not a usable key"
+        logger.info("BYOK key validation failed: %s", type(e).__name__)
         return False
 
 
@@ -80,18 +90,40 @@ def put_credentials(
             status_code=503,
             detail={"code": "byok_unavailable", "message": "BYOK is not available right now — try again later."},
         ) from e
+    except Exception as e:  # noqa: BLE001 - any KMS-side failure (outage, quota, transport) must map to
+        # a clean 503, never a raw 500 traceback. Log the exception TYPE only — never the plaintext key,
+        # never a message that could echo request details.
+        logger.warning("BYOK encrypt_key failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "byok_unavailable", "message": "Key storage is temporarily unavailable — try again."},
+        ) from e
 
     kms_key_name = os.environ.get("KMS_KEY_NAME", "").strip()
     with db_manager.get_session() as session:
         row = session.get(UserCredential, (user.id, "gemini"))
         if row is None:
-            session.add(
-                UserCredential(user_id=user.id, vendor="gemini", encrypted_key=ciphertext, kms_key_name=kms_key_name)
-            )
-        else:
+            # Two concurrent first-time PUTs can both see no row: the loser's flush hits
+            # the (user_id, vendor) primary key and raises IntegrityError. SAVEPOINT
+            # (begin_nested) so the rollback only undoes this insert attempt, not the
+            # whole request (get_or_create.py's pattern) — recover by re-querying and
+            # falling through to the update path below instead of a spurious 500.
+            try:
+                with session.begin_nested():
+                    session.add(
+                        UserCredential(
+                            user_id=user.id, vendor="gemini", encrypted_key=ciphertext, kms_key_name=kms_key_name
+                        )
+                    )
+                    session.flush()
+            except IntegrityError:
+                row = session.get(UserCredential, (user.id, "gemini"))
+                if row is None:  # constraint fired but nothing found back -- not our race
+                    raise
+        if row is not None:
             row.encrypted_key = ciphertext
             row.kms_key_name = kms_key_name
-        session.flush()
+            session.flush()
     return {"configured": True}
 
 

@@ -8,6 +8,7 @@ tiers.effective_tier is the single source of truth this exercises end to end."""
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -86,6 +87,33 @@ def test_put_stores_ciphertext_only_never_plaintext(client, db_url):
         assert row.encrypted_key != PLAINTEXT_KEY.encode("utf-8")
         assert PLAINTEXT_KEY.encode("utf-8") not in row.encrypted_key
         assert row.kms_key_name == KEY_NAME
+
+
+def test_put_again_replaces_ciphertext_and_bumps_updated_at(client, db_url):
+    """The upsert's UPDATE branch (re-PUT on an existing row): the stored ciphertext
+    changes to reflect the NEW key, kms_key_name still reflects the current env value,
+    and updated_at (the model's onupdate) strictly advances."""
+    first_resp = client.put("/api/me/credentials", json={"api_key": PLAINTEXT_KEY})
+    assert first_resp.status_code == 200
+
+    manager = DatabaseManager(db_url)
+    with manager.get_session() as session:
+        row = session.get(UserCredential, (DEFAULT_USER_ID, "gemini"))
+        first_ciphertext = row.encrypted_key
+        first_updated_at = row.updated_at
+
+    time.sleep(0.01)  # ensure onupdate's datetime.now(UTC) strictly advances
+    new_key = "AIzaADifferentReplacementGeminiKeyValue"
+    second_resp = client.put("/api/me/credentials", json={"api_key": new_key})
+    assert second_resp.status_code == 200
+    assert second_resp.json() == {"configured": True}
+
+    with manager.get_session() as session:
+        row = session.get(UserCredential, (DEFAULT_USER_ID, "gemini"))
+        assert row.encrypted_key == new_key.encode("utf-8")[::-1]
+        assert row.encrypted_key != first_ciphertext
+        assert row.kms_key_name == KEY_NAME
+        assert row.updated_at > first_updated_at
 
 
 def test_delete_removes_the_row(client, db_url):
