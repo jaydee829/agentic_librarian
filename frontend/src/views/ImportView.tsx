@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  commitImport, getImportJob, previewImport, retryImport,
+  ApiError, commitImport, getImportJob, previewImport, retryImport,
   type ColumnMapping, type ImportPreview, type ImportStatus,
 } from '../api/client'
 import './ImportView.css'
@@ -77,8 +77,10 @@ export default function ImportView() {
       const res = await commitImport(file, mapping, { importToRead: toRead, importCurrentlyReading: currently })
       setJobId(res.import_job_id)
       setStep('progress')
-    } catch {
-      setError('Import could not start. Please try again.')
+    } catch (e) {
+      // #100: 413 import_rows_limit / 409 import_in_flight carry a human message worth
+      // showing verbatim; anything else falls back to the generic copy.
+      setError(e instanceof ApiError ? e.detail : 'Import could not start. Please try again.')
     } finally {
       setBusy(false)
     }

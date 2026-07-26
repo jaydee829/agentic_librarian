@@ -32,14 +32,42 @@ _GOODREADS_MAP = {
 }
 
 
+class _NullQuery:
+    """Chainable no-op ORM query stub. `.first()` returns whatever `result` was configured
+    with — the commit-cap unit tests only need to control that one value; the real
+    join/filter correctness is proven against Postgres in test_api_import_caps.py."""
+
+    def __init__(self, result=None):
+        self._result = result
+
+    def join(self, *a, **k):
+        return self
+
+    def filter(self, *a, **k):
+        return self
+
+    def first(self):
+        return self._result
+
+
 class _Recorder:
-    def __init__(self):
+    def __init__(self, in_flight=None):
         self.jobs = []
         self.rows = []
+        # Configurable first()-result for any session.query(...) call made inside commit
+        # (the #100 in-flight check; effective_tier's own UserCredential query is bypassed
+        # in tests that need this by monkeypatching tiers.effective_tier directly instead).
+        self.in_flight = in_flight
 
     def add(self, obj):
         name = type(obj).__name__
         (self.jobs if name == "ImportJob" else self.rows).append(obj)
+
+    def get(self, model, obj_id):
+        return None  # no User row -> tiers.effective_tier resolves 'free' (subscriber_until None)
+
+    def query(self, *entities):
+        return _NullQuery(self.in_flight)
 
     def __enter__(self):
         return self
@@ -66,8 +94,8 @@ def _fake_manager(rec):
     return _M()
 
 
-def _commit(monkeypatch, *, to_read=True):
-    rec = _Recorder()
+def _commit(monkeypatch, *, to_read=True, in_flight=None):
+    rec = _Recorder(in_flight=in_flight)
     monkeypatch.setattr(imports_mod, "db_manager", _fake_manager(rec))
     enq = []
     monkeypatch.setattr(imports_mod, "enqueue_import_row", lambda row_id: enq.append(row_id) or True)
@@ -109,3 +137,26 @@ def test_commit_422_when_required_mapping_missing(monkeypatch):
         data={"mapping": json.dumps(bad), "import_to_read": "true", "import_currently_reading": "true"},
     )
     assert r.status_code == 422
+
+
+def test_commit_413_when_over_tier_row_limit(monkeypatch):
+    """#100: wiring check only — the real free/supporter/DB-driven cap resolution is
+    covered end-to-end against Postgres in test_api_import_caps.py."""
+    monkeypatch.setattr(imports_mod.tiers, "import_max_rows", lambda tier: 1)
+    r, rec, enq = _commit(monkeypatch)
+    assert r.status_code == 413
+    body = r.json()["detail"]
+    assert body["code"] == "import_rows_limit"
+    assert rec.jobs == []  # rejected before anything was written
+    assert enq == []
+
+
+def test_commit_409_when_import_already_in_flight(monkeypatch):
+    """#100: wiring check only — real pending/processing-row detection against Postgres is
+    covered in test_api_import_caps.py."""
+    monkeypatch.setattr(imports_mod.tiers, "effective_tier", lambda session, user_id: "free")
+    r, rec, enq = _commit(monkeypatch, in_flight="some-row-id")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "import_in_flight"
+    assert rec.jobs == []
+    assert enq == []

@@ -14,8 +14,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
+from agentic_librarian.core import budgets
 from agentic_librarian.core.user_context import as_user
 from agentic_librarian.enrichment import two_phase
+from agentic_librarian.enrichment.tasks import enqueue_edition_completion, enqueue_enrichment
 from agentic_librarian.etl.trope_predicate import is_fallback_trope_name
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,23 @@ def enrich(
     user_id: UUID | None = Query(None),  # noqa: B008
 ):
     _require_queue_caller(authorization)
+    allowed, why = budgets.enrichment_allowed(user_id)
+    if not allowed:
+        when = budgets.next_utc_day_start_with_jitter()
+        try:
+            requeued = enqueue_enrichment(
+                str(work_id), user_id=str(user_id) if user_id is not None else None, schedule_time=when
+            )
+        except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
+            logger.exception("deferral re-enqueue failed for work %s", work_id)
+            requeued = False
+        if not requeued:
+            logger.warning("over budget and could not defer work %s (%s) — dropping to the requeue sweep", work_id, why)
+            return {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
+        logger.info("deferred enrichment of work %s to %s (%s)", work_id, when.isoformat(), why)
+        # 200 on purpose: the ORIGINAL task is consumed; the deferred copy is a NEW task,
+        # so the #97 give-up retry count does not accumulate across days.
+        return {"work_id": str(work_id), "status": "deferred", "until": when.isoformat()}
     # Pre-#100 tasks carry no user_id — run un-attributed exactly as before (metering
     # skips; nothing crashes). Attributed tasks bill the requesting user.
     ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
@@ -148,6 +167,28 @@ def complete_edition(
     A 500 → normal Cloud Tasks retry only fires for a failure OUTSIDE the scout manager
     (persist/DB error) propagating uncaught, never for the scouts merely finding nothing."""
     _require_queue_caller(authorization)
+    allowed, why = budgets.enrichment_allowed(user_id)
+    if not allowed:
+        when = budgets.next_utc_day_start_with_jitter()
+        try:
+            requeued = enqueue_edition_completion(
+                str(work_id), format, user_id=str(user_id) if user_id is not None else None, schedule_time=when
+            )
+        except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
+            logger.exception("deferral re-enqueue failed for work %s format %s", work_id, format)
+            requeued = False
+        if not requeued:
+            logger.warning(
+                "over budget and could not defer completion of work %s format %s (%s) — dropping to the requeue sweep",
+                work_id,
+                format,
+                why,
+            )
+            return {"work_id": str(work_id), "format": format, "status": "deferred_enqueue_failed"}
+        logger.info(
+            "deferred edition completion of work %s format %s to %s (%s)", work_id, format, when.isoformat(), why
+        )
+        return {"work_id": str(work_id), "format": format, "status": "deferred", "until": when.isoformat()}
     # Pre-#100 tasks carry no user_id — run un-attributed exactly as before.
     ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
     with ctx:

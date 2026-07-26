@@ -6,6 +6,7 @@ vi.mock('../auth/firebase', () => ({ getIdToken: vi.fn().mockResolvedValue(null)
 
 import ImportView from './ImportView'
 import * as client from '../api/client'
+import { ApiError } from '../api/client'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -112,6 +113,21 @@ describe('ImportView', () => {
     fireEvent.click(screen.getByRole('button', { name: /continue/i }))     // map → review
     fireEvent.click(screen.getByRole('button', { name: /start import/i })) // review → progress
     await waitFor(() => expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument())
+  })
+
+  it('surfaces the server detail.message when commit is rejected over the row cap (#100)', async () => {
+    vi.spyOn(client, 'previewImport').mockResolvedValue(PREVIEW)
+    // #100: a persistent mockRejectedValue overrides EVERY call (vitest#1692) and would fail
+    // as an "unhandled error" outside the awaited assertion — use ...Once (frontend-test-pitfalls).
+    vi.spyOn(client, 'commitImport').mockRejectedValueOnce(
+      new ApiError(413, 'This import has 301 rows; your current limit is 300. Split the file.'),
+    )
+    render(<ImportView />)
+    uploadFile()
+    await screen.findByText(/Detected: goodreads/i)
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }))     // map → review
+    fireEvent.click(screen.getByRole('button', { name: /start import/i })) // review → progress
+    await screen.findByText(/your current limit is 300/i)
   })
 
   it('offers retry when rows are stalled (not yet complete)', async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { commitImport, getImportJob, previewImport, retryImport } from './client'
+import { ApiError, commitImport, getImportJob, previewImport, retryImport } from './client'
 
 vi.mock('../auth/firebase', () => ({ getIdToken: async () => 'tok' }))
 
@@ -33,6 +33,49 @@ describe('import client', () => {
     const body = (f.mock.calls[0][1] as RequestInit).body as FormData
     expect(body.get('import_to_read')).toBe('true')
     expect(body.get('import_currently_reading')).toBe('false')
+  })
+
+  it('commitImport surfaces the server detail.message on 413 as an ApiError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 413,
+      json: async () => ({
+        detail: {
+          code: 'import_rows_limit',
+          message: 'This import has 301 rows; your current limit is 300. Split the file.',
+        },
+      }),
+    } as Response)
+    const file = new File(['x'], 'export.csv', { type: 'text/csv' })
+    let caught: unknown
+    try {
+      await commitImport(file, { title: 'Title' }, { importToRead: true, importCurrentlyReading: false })
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(ApiError)
+    expect((caught as InstanceType<typeof ApiError>).status).toBe(413)
+    expect((caught as InstanceType<typeof ApiError>).detail).toContain('current limit is 300')
+  })
+
+  it('commitImport surfaces the server detail.message on 409 as an ApiError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        detail: { code: 'import_in_flight', message: 'Your previous import is still running.' },
+      }),
+    } as Response)
+    const file = new File(['x'], 'export.csv', { type: 'text/csv' })
+    let caught: unknown
+    try {
+      await commitImport(file, { title: 'Title' }, { importToRead: true, importCurrentlyReading: false })
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(ApiError)
+    expect((caught as InstanceType<typeof ApiError>).status).toBe(409)
+    expect((caught as InstanceType<typeof ApiError>).detail).toBe('Your previous import is still running.')
   })
 
   it('getImportJob fetches status', async () => {

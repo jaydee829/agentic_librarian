@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
+from agentic_librarian.core import tiers
 from agentic_librarian.db.models import ImportJob, ImportRow
 from agentic_librarian.db.session import DatabaseManager
 from agentic_librarian.imports import bucketing, parsing
@@ -139,6 +140,38 @@ async def commit(
 
     enqueue_ids: list[str] = []
     with db_manager.get_session() as session:
+        # Per-tier row cap (#100): the hard MAX_ROWS ceiling above is absolute (protects
+        # the parser/DB regardless of tier); this is the tighter, tier-aware limit.
+        tier = tiers.effective_tier(session, user.id)
+        limit = min(MAX_ROWS, tiers.import_max_rows(tier))
+        row_count = len(parsed)
+        if row_count > limit:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": "import_rows_limit",
+                    "message": f"This import has {row_count} rows; your current limit is {limit}. "
+                    "Split the file — or support Shelfwright for the full 2,000-row limit.",
+                },
+            )
+
+        # One in-flight import at a time (#100): a prior commit's rows still pending/processing
+        # blocks a new commit — avoids two jobs' Cloud Tasks racing on the same user's history.
+        in_flight = (
+            session.query(ImportRow.id)
+            .join(ImportJob, ImportJob.id == ImportRow.import_job_id)
+            .filter(ImportJob.user_id == user.id, ImportRow.status.in_(("pending", "processing")))
+            .first()
+        )
+        if in_flight is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "import_in_flight",
+                    "message": "Your previous import is still running — wait for it to finish before starting another.",
+                },
+            )
+
         job = ImportJob(user_id=user.id, source=source, original_filename=original_filename, total_rows=len(parsed))
         session.add(job)
         session.flush()  # populate job.id for the ImportRow FK

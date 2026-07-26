@@ -356,7 +356,20 @@ export async function commitImport(
   form.set('import_currently_reading', String(opts.importCurrentlyReading))
   form.set('original_filename', file.name)
   const res = await authedFetchRaw('/import/commit', { method: 'POST', body: form })
-  if (!res.ok) throw new Error(`commit import → ${res.status}`)
+  if (!res.ok) {
+    // #100: 413 import_rows_limit / 409 import_in_flight carry a human message in
+    // detail.message (updateHistory's ApiError pattern, adapted for the object-shaped
+    // detail the chat 429 path also uses — see streamChat above).
+    let detail = `commit import → ${res.status}`
+    try {
+      const parsed = await res.json()
+      if (typeof parsed?.detail === 'string') detail = parsed.detail
+      else if (typeof parsed?.detail?.message === 'string') detail = parsed.detail.message
+    } catch {
+      // non-JSON error body — keep the generic detail
+    }
+    throw new ApiError(res.status, detail)
+  }
   return res.json() as Promise<ImportCommitResult>
 }
 
