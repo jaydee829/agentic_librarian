@@ -1,3 +1,7 @@
+from unittest.mock import MagicMock
+
+import pytest
+
 from agentic_librarian.orchestration.definitions import (
     create_completion_scout_manager,
     create_deep_scout_manager,
@@ -40,3 +44,62 @@ def test_completion_manager_composition(monkeypatch):
         AudiobookScout,
         DirectKnowledgeScout,
     ]
+
+
+@pytest.fixture
+def _no_network_gemini_client(monkeypatch):
+    """GeminiGroundedLLM's __init__ builds a real genai.Client — stub it so constructing
+    LLM scouts in these threading tests never attempts a network call. Also pins
+    AGENT_BACKEND to the default Gemini provider regardless of the ambient env."""
+    from agentic_librarian.scouts import grounded_llm
+
+    monkeypatch.setattr(grounded_llm.genai, "Client", lambda *a, **k: MagicMock())
+    monkeypatch.delenv("AGENT_BACKEND", raising=False)
+
+
+@pytest.mark.parametrize(
+    ("factory", "llm_scout_types"),
+    [
+        pytest.param(
+            create_deep_scout_manager, {AudiobookScout, DirectKnowledgeScout, StyleScout, LLMTropeScout}, id="deep"
+        ),
+        pytest.param(create_completion_scout_manager, {AudiobookScout, DirectKnowledgeScout}, id="completion"),
+    ],
+)
+def test_factory_threads_byok_key_into_every_llm_scout(
+    monkeypatch, _no_network_gemini_client, factory, llm_scout_types
+):
+    """arc 3/3: a byok user's api_key/key_source must reach every LLM scout's underlying
+    GeminiGroundedLLM (so its usage rows record key_source='byok'), never the non-LLM
+    API scouts (Hardcover/GoogleBooks, which use their own unrelated keys)."""
+    monkeypatch.delenv("GOOGLE_SEARCH_API_KEY", raising=False)
+    manager = factory("byok-users-gemini-key", "byok")
+
+    seen_llm_scouts = [s for s, _priority in manager.scouts if type(s) in llm_scout_types]
+    assert len(seen_llm_scouts) == len(llm_scout_types)
+    for scout in seen_llm_scouts:
+        assert scout.api_key == "byok-users-gemini-key"
+        assert scout._llm.api_key == "byok-users-gemini-key"
+        assert scout._llm.key_source == "byok"
+
+    non_llm_scouts = [s for s, _priority in manager.scouts if type(s) not in llm_scout_types]
+    for scout in non_llm_scouts:
+        assert type(scout) in (HardcoverScout, GoogleBooksScout)
+        # HardcoverScout/GoogleBooksScout read their OWN env-keyed credentials — the byok
+        # Gemini key must never leak into them.
+        assert scout.api_key != "byok-users-gemini-key"
+
+
+def test_factory_defaults_are_app_keyed(monkeypatch, _no_network_gemini_client):
+    """No api_key/key_source passed -> every LLM scout stays on the app key, byte-identical
+    to pre-BYOK behavior."""
+    monkeypatch.setenv("GOOGLE_SEARCH_API_KEY", "dummy-key-for-construction")
+    manager = create_deep_scout_manager()
+    llm_scouts = [
+        s
+        for s, _priority in manager.scouts
+        if isinstance(s, AudiobookScout | DirectKnowledgeScout | StyleScout | LLMTropeScout)
+    ]
+    assert len(llm_scouts) == 4
+    for scout in llm_scouts:
+        assert scout._llm.key_source == "app"

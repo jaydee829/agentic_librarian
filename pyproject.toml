@@ -46,7 +46,10 @@ dependencies = [
     "firebase-admin>=6.5",
     # Cloud Tasks enqueue for deep enrichment (Lift 2 Stage 3) — queues a fresh request
     # so the slow LLM pass runs with full Cloud Run CPU + long timeout.
-    "google-cloud-tasks>=2.16"
+    "google-cloud-tasks>=2.16",
+    # BYOK credential encryption (monetization arc 3/3, core/byok.py) — envelope
+    # encrypt/decrypt of user-supplied Gemini keys via a Cloud KMS symmetric key.
+    "google-cloud-kms>=2.24",
 ]
 
 [project.scripts]

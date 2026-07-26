@@ -5,6 +5,7 @@ chain needs real settings, but complete_edition itself is monkeypatched — the 
 own behavior is covered by test/unit/test_edition_completion.py."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -12,23 +13,31 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import internal as internal_mod
 from agentic_librarian.api import main as api_main
-from agentic_librarian.core.user_context import current_user_id, get_required_user_id
+from agentic_librarian.core import byok
+from agentic_librarian.core.user_context import DEFAULT_USER_ID, current_user_id, get_required_user_id
+from agentic_librarian.db.models import UserCredential
 from agentic_librarian.db.session import DatabaseManager
 
 pytestmark = pytest.mark.db_integration
 
 VALID_AUD = "https://librarian.example.run.app/internal/enrich/x"
 QUEUE_SA = "queue-invoker@p.iam.gserviceaccount.com"
+KMS_KEY_NAME = "projects/p/locations/us-central1/keyRings/librarian/cryptoKeys/byok-credentials"
 
 
 @pytest.fixture
 def client(db_url, monkeypatch):
     # #100: point the budget gate at the isolated test DB, same reasoning as
     # test_internal_enrich_api.py's client fixture.
-    monkeypatch.setattr(internal_mod.budgets, "db_manager", DatabaseManager(db_url))
+    manager = DatabaseManager(db_url)
+    monkeypatch.setattr(internal_mod.budgets, "db_manager", manager)
+    # arc 3/3 BYOK: the completion handler resolves keys via two_phase.db_manager (the same
+    # shared DB-access pattern _has_real_trope already uses) — point it at the test DB too.
+    monkeypatch.setattr(internal_mod.two_phase, "db_manager", manager)
     monkeypatch.setenv("ENRICH_INVOKER_SA", QUEUE_SA)
     monkeypatch.setenv("ENRICH_OIDC_AUDIENCE", VALID_AUD)
     yield TestClient(api_main.app)
+    byok.set_kms_client(None)  # never leak a fake KMS client into a later test
 
 
 def _as_queue(monkeypatch):
@@ -217,3 +226,194 @@ def test_over_budget_and_enqueue_raises_is_deferred_enqueue_failed(client, monke
     resp = client.post(f"/internal/complete-edition/{wid}?format=ebook", headers={"Authorization": "Bearer ok"})
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(wid), "format": "ebook", "status": "deferred_enqueue_failed"}
+
+
+# --- arc 3/3 BYOK: /internal/complete-edition resolves the requesting user's Gemini key ---
+
+
+class _FakeKmsClient:
+    """Reversible stand-in ciphertext (mirrors test_credentials_db.py) — no real KMS call."""
+
+    def __init__(self, decrypt_error: Exception | None = None):
+        self._decrypt_error = decrypt_error
+
+    def encrypt(self, request):
+        return SimpleNamespace(ciphertext=request["plaintext"][::-1])
+
+    def decrypt(self, request):
+        if self._decrypt_error is not None:
+            raise self._decrypt_error
+        return SimpleNamespace(plaintext=request["ciphertext"][::-1])
+
+
+def _seed_credential(db_url, *, user_id, plaintext_key):
+    """Seed a UserCredential row with real (fake-KMS) ciphertext for `user_id` — the byok
+    caller must already be a real `users` row (DEFAULT_USER_ID, autoseeded by conftest)."""
+    manager = DatabaseManager(db_url)
+    ciphertext = byok.encrypt_key(plaintext_key)
+    with manager.get_session() as s:
+        s.add(UserCredential(user_id=user_id, vendor="gemini", encrypted_key=ciphertext, kms_key_name=KMS_KEY_NAME))
+        s.flush()
+
+
+def test_byok_credentialed_user_completion_passes_key_and_byok_source(client, db_url, monkeypatch):
+    """The completion handler resolves DEFAULT_USER_ID's stored key and threads it into
+    two_phase.complete_edition as api_key/key_source='byok' (probe seam)."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient())
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-users-real-gemini-key")
+
+    captured = {}
+
+    def _fake_complete(wid, fmt, api_key=None, key_source="app"):
+        captured["args"] = (wid, fmt, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "complete_edition", _fake_complete)
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "done"}
+    assert captured["args"] == (wid, "audiobook", "sk-users-real-gemini-key", "byok")
+
+
+def test_user_without_byok_credential_completion_stays_app_keyed(client, db_url, monkeypatch):
+    """No stored credential -> resolution returns (None, 'app') and the handler's call is
+    byte-identical to pre-BYOK behavior (no extra kwargs)."""
+    _as_queue(monkeypatch)
+
+    captured = {}
+
+    def _fake_complete(wid, fmt, api_key=None, key_source="app"):
+        captured["args"] = (wid, fmt, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "complete_edition", _fake_complete)
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert captured["args"] == (wid, "audiobook", None, "app")
+
+
+def test_byok_key_error_returns_200_byok_key_error_and_never_calls_complete_edition(client, db_url, monkeypatch):
+    """Spec error table: decrypt failure -> task consumed with 200 byok_key_error, never a
+    silent fallback to the app key, and the paid completion pass never runs."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient(decrypt_error=RuntimeError("kms unavailable")))
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-doesnt-matter")
+
+    ran_complete = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase, "complete_edition", lambda *a, **k: ran_complete.__setitem__("called", True) or "done"
+    )
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "byok_key_error"}
+    assert ran_complete["called"] is False
+
+
+# --- task-2 review: key resolution must run BEFORE the budget gate, and a byok pass must
+# never be deferred by the tier-blind app-key governor (spec AC#2) ---
+
+
+def test_byok_credentialed_user_bypasses_budget_gate_and_still_runs(client, db_url, monkeypatch):
+    """Even with the app-key governor exhausted, a byok user's completion task must run on
+    their own key — never deferred by a budget that their usage rows are excluded from."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient())
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-users-real-gemini-key")
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+
+    captured = {}
+
+    def _fake_complete(wid, fmt, api_key=None, key_source="app"):
+        captured["args"] = (wid, fmt, api_key, key_source)
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "complete_edition", _fake_complete)
+    enqueue_calls = []
+    monkeypatch.setattr(
+        internal_mod, "enqueue_edition_completion", lambda *a, **k: enqueue_calls.append((a, k)) or True
+    )
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "done"}
+    assert captured["args"] == (wid, "audiobook", "sk-users-real-gemini-key", "byok")
+    assert enqueue_calls == []  # never deferred
+
+
+def test_app_key_user_still_defers_when_over_budget(client, monkeypatch):
+    """An app-key user (no byok credential) is unaffected by the reorder: the budget gate
+    still fires and defers exactly as before."""
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+    ran_complete = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase,
+        "complete_edition",
+        lambda wid, fmt, **k: ran_complete.__setitem__("called", True) or "done",
+    )
+    calls = []
+    monkeypatch.setattr(
+        internal_mod,
+        "enqueue_edition_completion",
+        lambda wid, fmt, user_id=None, schedule_time=None: calls.append((wid, fmt)) or True,
+    )
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deferred"
+    assert ran_complete["called"] is False
+    assert calls == [(str(wid), "audiobook")]
+
+
+def test_byok_key_error_never_reaches_the_budget_gate(client, db_url, monkeypatch):
+    """The ByokKeyError early-return must fire BEFORE any budget logic — a revoked/broken
+    byok key must not even consult the (irrelevant) app-key governor."""
+    _as_queue(monkeypatch)
+    monkeypatch.setenv("KMS_KEY_NAME", KMS_KEY_NAME)
+    byok.set_kms_client(_FakeKmsClient(decrypt_error=RuntimeError("kms unavailable")))
+    _seed_credential(db_url, user_id=DEFAULT_USER_ID, plaintext_key="sk-doesnt-matter")
+
+    budget_calls = {"called": False}
+
+    def _fail_if_called(uid):
+        budget_calls["called"] = True
+        return False, "global grounded-call governor reached"
+
+    monkeypatch.setattr(internal_mod.budgets, "enrichment_allowed", _fail_if_called)
+
+    wid = uuid4()
+    resp = client.post(
+        f"/internal/complete-edition/{wid}?format=audiobook&user_id={DEFAULT_USER_ID}",
+        headers={"Authorization": "Bearer ok"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(wid), "format": "audiobook", "status": "byok_key_error"}
+    assert budget_calls["called"] is False

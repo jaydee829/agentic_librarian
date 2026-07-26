@@ -36,11 +36,12 @@ def _extract_text(response) -> str | None:
     return "".join(texts) if texts else None
 
 
-def _record_gemini_usage(model_name: str, response) -> None:
+def _record_gemini_usage(model_name: str, response, key_source: str = "app") -> None:
     """Meter at the RESPONSE object (#100): the SDK's HTTP-level 429/5xx retry must not
     double-count; scout-level retries are genuinely separate billable calls and each
     records via its own response. record_llm_call never raises (warns + drops when no
-    user is in context, e.g. pre-#100 queued tasks)."""
+    user is in context, e.g. pre-#100 queued tasks). key_source threads through from the
+    scout's construction (arc 3/3 BYOK routing) — 'app' unless a byok key was used."""
     um = getattr(response, "usage_metadata", None)
     if um is None:
         return
@@ -49,15 +50,17 @@ def _record_gemini_usage(model_name: str, response) -> None:
         model_name,
         int(getattr(um, "prompt_token_count", 0) or 0),
         int(getattr(um, "candidates_token_count", 0) or 0),
+        key_source=key_source,
     )
 
 
 class GeminiGroundedLLM:
     """Grounded generation via Gemini's google_search tool — the prior scout behavior, relocated."""
 
-    def __init__(self, api_key: str | None = None, model_name: str | None = None):
+    def __init__(self, api_key: str | None = None, model_name: str | None = None, key_source: str = "app"):
         self.api_key = api_key or os.environ.get("GOOGLE_SEARCH_API_KEY")
         self.model_name = model_name or grounding_model_name()
+        self.key_source = key_source
         self._client = genai.Client(api_key=self.api_key, http_options=genai_http_options())
 
     def generate(self, prompt: str, grounded: bool = True) -> str:
@@ -67,7 +70,7 @@ class GeminiGroundedLLM:
             contents=prompt,
             config={"tools": [{"google_search": {}}] if use_grounding else []},
         )
-        _record_gemini_usage(self.model_name, response)
+        _record_gemini_usage(self.model_name, response, self.key_source)
         return _extract_text(response) or ""
 
 
@@ -124,13 +127,15 @@ class ClaudeGroundedLLM:
         return text
 
 
-def get_grounded_llm(api_key: str | None = None, model_name: str | None = None) -> GroundedLLM:
+def get_grounded_llm(api_key: str | None = None, model_name: str | None = None, key_source: str = "app") -> GroundedLLM:
     """Pick the grounding-LLM provider from AGENT_BACKEND (default/'adk' -> Gemini; 'claude' -> Claude).
-    `model_name` applies only to the Gemini provider; the Claude provider uses CLAUDE_MODEL."""
+    `model_name` applies only to the Gemini provider; the Claude provider uses CLAUDE_MODEL.
+    `key_source` (arc 3/3 BYOK) threads to the Gemini provider only — the Claude provider
+    records its own vendor ('anthropic') and is unaffected by a user's Gemini key."""
     choice = os.environ.get("AGENT_BACKEND", "adk").strip().lower()
     if choice == "claude":
         return ClaudeGroundedLLM()
     if choice not in ("adk", ""):
         # Fail loudly on a typo rather than silently defaulting to Gemini (matches agents.get_backend).
         raise ValueError(f"Unknown AGENT_BACKEND={choice!r} (expected 'adk' or 'claude').")
-    return GeminiGroundedLLM(api_key, model_name)
+    return GeminiGroundedLLM(api_key, model_name, key_source=key_source)

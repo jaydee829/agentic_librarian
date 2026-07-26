@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const signOut = vi.fn()
@@ -21,7 +22,7 @@ afterEach(() => {
 })
 
 async function openMenu() {
-  render(<AccountMenu />)
+  render(<AccountMenu />, { wrapper: MemoryRouter })
   const trigger = screen.getByRole('button', { name: /account menu/i })
   await userEvent.click(trigger)
   return trigger
@@ -29,7 +30,7 @@ async function openMenu() {
 
 describe('AccountMenu', () => {
   it('is closed by default, with aria-expanded false on the trigger', () => {
-    render(<AccountMenu />)
+    render(<AccountMenu />, { wrapper: MemoryRouter })
     const trigger = screen.getByRole('button', { name: /account menu/i })
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
@@ -78,7 +79,7 @@ describe('AccountMenu', () => {
     })
     await openMenu()
     const menuItems = await screen.findAllByRole('menuitem')
-    const links = menuItems.filter((el) => el.tagName === 'A')
+    const links = menuItems.filter((el) => el.getAttribute('href') === 'https://ko-fi.com/shelfwright')
     expect(links).toHaveLength(3)
     for (const link of links) {
       expect(link).toHaveAttribute('href', 'https://ko-fi.com/shelfwright')
@@ -114,5 +115,22 @@ describe('AccountMenu', () => {
     await waitFor(() => expect(vi.mocked(getAccount)).toHaveBeenCalled())
     await userEvent.click(screen.getByRole('menuitem', { name: /sign out/i }))
     expect(signOut).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows "Using your own key" for a byok-tier account', async () => {
+    vi.mocked(getAccount).mockResolvedValueOnce({
+      email: 'a@b.com', display_name: 'Ada', tier: 'byok', subscriber_until: null,
+    })
+    await openMenu()
+    await waitFor(() => expect(screen.getByText('Using your own key')).toBeInTheDocument())
+  })
+
+  it('has an "API key settings" menuitem linking to /settings', async () => {
+    vi.mocked(getAccount).mockResolvedValueOnce({
+      email: 'a@b.com', display_name: 'Ada', tier: 'free', subscriber_until: null,
+    })
+    await openMenu()
+    const link = await screen.findByRole('menuitem', { name: /api key settings/i })
+    expect(link).toHaveAttribute('href', '/settings')
   })
 })

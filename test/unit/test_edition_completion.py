@@ -48,7 +48,7 @@ def _wire(monkeypatch, *, work, edition, enriched, state=None):
     monkeypatch.setattr(two_phase, "db_manager", fake_manager)
     scout_mgr = MagicMock()
     scout_mgr.enrich.return_value = enriched
-    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda: scout_mgr)
+    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda *a, **k: scout_mgr)
     return state, scout_mgr
 
 
@@ -91,7 +91,7 @@ def test_done_merges_scouted_values_for_audiobook(monkeypatch):
     monkeypatch.setattr(two_phase, "get_cached_embedding", lambda *a, **k: [0.0])
     style_scout = MagicMock()
     style_scout.scout_narrator_style.return_value = {"pacing": "brisk"}
-    monkeypatch.setattr(two_phase, "StyleScout", lambda: style_scout)
+    monkeypatch.setattr(two_phase, "StyleScout", lambda *a, **k: style_scout)
     merged = {}
 
     def fake_merge(session, **kwargs):
@@ -124,7 +124,7 @@ def test_style_scout_failure_degrades_to_no_styles(monkeypatch):
     monkeypatch.setattr(two_phase, "get_cached_embedding", lambda *a, **k: [0.0])
     broken = MagicMock()
     broken.scout_narrator_style.side_effect = RuntimeError("LLM down")
-    monkeypatch.setattr(two_phase, "StyleScout", lambda: broken)
+    monkeypatch.setattr(two_phase, "StyleScout", lambda *a, **k: broken)
     merged = {}
     monkeypatch.setattr(
         two_phase, "merge_edition_and_narrators", lambda session, **kw: merged.update(kw) or MagicMock()
@@ -155,7 +155,7 @@ def test_work_deleted_mid_pass_returns_missing(monkeypatch):
     monkeypatch.setattr(two_phase, "db_manager", fake_manager)
     scout_mgr = MagicMock()
     scout_mgr.enrich.return_value = enriched
-    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda: scout_mgr)
+    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda *a, **k: scout_mgr)
     assert two_phase.complete_edition(uuid4(), "ebook") == "missing"
 
 
@@ -183,7 +183,7 @@ def test_edition_deleted_mid_pass_returns_missing_without_merge(monkeypatch):
     monkeypatch.setattr(two_phase, "db_manager", fake_manager)
     scout_mgr = MagicMock()
     scout_mgr.enrich.return_value = enriched
-    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda: scout_mgr)
+    monkeypatch.setattr(two_phase, "create_completion_scout_manager", lambda *a, **k: scout_mgr)
     merge_calls = []
     monkeypatch.setattr(
         two_phase, "merge_edition_and_narrators", lambda session, **kw: merge_calls.append(kw) or MagicMock()

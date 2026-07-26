@@ -14,7 +14,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
-from agentic_librarian.core import budgets
+from agentic_librarian.core import budgets, byok
 from agentic_librarian.core.user_context import as_user
 from agentic_librarian.enrichment import two_phase
 from agentic_librarian.enrichment.tasks import enqueue_edition_completion, enqueue_enrichment
@@ -22,6 +22,21 @@ from agentic_librarian.etl.trope_predicate import is_fallback_trope_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _resolve_byok_key(user_id: UUID) -> tuple[str | None, str]:
+    """Resolve a byok user's Gemini key for the internal enrichment endpoints (arc 3/3).
+    Returns (api_key, key_source) — (None, "app") when the user has no byok credential
+    (the common case). A short session, opened via two_phase's shared db_manager (the same
+    DB-access pattern _has_real_trope below already uses) — resolution is not worth holding
+    a session across the whole scout pass for. Raises ByokKeyError/ByokNotConfigured on
+    decrypt/config failure so callers map it to the documented byok_key_error response
+    (spec §3 error table) instead of silently falling back to the app key."""
+    with two_phase.db_manager.get_session() as session:
+        key = byok.resolve_gemini_key(session, user_id)
+    if key is None:
+        return None, "app"
+    return key, "byok"
 
 
 def _verify_oidc(token: str, audience: str) -> dict:
@@ -95,28 +110,58 @@ def enrich(
     user_id: UUID | None = Query(None),  # noqa: B008
 ):
     _require_queue_caller(authorization)
-    allowed, why = budgets.enrichment_allowed(user_id)
-    if not allowed:
-        when = budgets.next_utc_day_start_with_jitter()
-        try:
-            requeued = enqueue_enrichment(
-                str(work_id), user_id=str(user_id) if user_id is not None else None, schedule_time=when
-            )
-        except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
-            logger.exception("deferral re-enqueue failed for work %s", work_id)
-            requeued = False
-        if not requeued:
-            logger.warning("over budget and could not defer work %s (%s) — dropping to the requeue sweep", work_id, why)
-            return {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
-        logger.info("deferred enrichment of work %s to %s (%s)", work_id, when.isoformat(), why)
-        # 200 on purpose: the ORIGINAL task is consumed; the deferred copy is a NEW task,
-        # so the #97 give-up retry count does not accumulate across days.
-        return {"work_id": str(work_id), "status": "deferred", "until": when.isoformat()}
     # Pre-#100 tasks carry no user_id — run un-attributed exactly as before (metering
     # skips; nothing crashes). Attributed tasks bill the requesting user.
     ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
     with ctx:
-        result = two_phase.enrich_deep(work_id)
+        api_key: str | None = None
+        key_source = "app"
+        if user_id is not None:
+            # arc 3/3 BYOK: resolve the requesting user's Gemini key, if any, BEFORE the
+            # budget gate below (task-2 review, spec AC#2) — a byok pass must never be
+            # deferred by the tier-blind app-key governor. No credential row -> (None,
+            # "app"), same as today. A decrypt/config failure must never fall back to the
+            # app key (spec §"No silent fallback") — log the failure TYPE only (never key
+            # material) and consume the task: retrying can't fix a revoked key, the
+            # operator's requeue sweep is the backstop.
+            try:
+                api_key, key_source = _resolve_byok_key(user_id)
+            except (byok.ByokKeyError, byok.ByokNotConfigured) as e:
+                logger.warning(
+                    "byok key resolution failed for enrich work_id=%s user_id=%s: %s",
+                    work_id,
+                    user_id,
+                    type(e).__name__,
+                )
+                return {"work_id": str(work_id), "status": "byok_key_error"}
+        if api_key is None:
+            # App-key path only: a byok pass spends the user's own quota, so the tier-blind
+            # global governor and per-user app budgets don't apply to it — its usage rows
+            # are excluded from those counts by the key_source=='app' filter already.
+            allowed, why = budgets.enrichment_allowed(user_id)
+            if not allowed:
+                when = budgets.next_utc_day_start_with_jitter()
+                try:
+                    requeued = enqueue_enrichment(
+                        str(work_id), user_id=str(user_id) if user_id is not None else None, schedule_time=when
+                    )
+                except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
+                    logger.exception("deferral re-enqueue failed for work %s", work_id)
+                    requeued = False
+                if not requeued:
+                    logger.warning(
+                        "over budget and could not defer work %s (%s) — dropping to the requeue sweep", work_id, why
+                    )
+                    return {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
+                logger.info("deferred enrichment of work %s to %s (%s)", work_id, when.isoformat(), why)
+                # 200 on purpose: the ORIGINAL task is consumed; the deferred copy is a NEW task,
+                # so the #97 give-up retry count does not accumulate across days.
+                return {"work_id": str(work_id), "status": "deferred", "until": when.isoformat()}
+        result = (
+            two_phase.enrich_deep(work_id, api_key=api_key, key_source=key_source)
+            if api_key is not None
+            else two_phase.enrich_deep(work_id)
+        )
     if result == "missing":
         # Non-retryable: the work no longer exists. 404 stops Cloud Tasks from retrying.
         raise HTTPException(status_code=404, detail="work not found")
@@ -167,32 +212,61 @@ def complete_edition(
     A 500 → normal Cloud Tasks retry only fires for a failure OUTSIDE the scout manager
     (persist/DB error) propagating uncaught, never for the scouts merely finding nothing."""
     _require_queue_caller(authorization)
-    allowed, why = budgets.enrichment_allowed(user_id)
-    if not allowed:
-        when = budgets.next_utc_day_start_with_jitter()
-        try:
-            requeued = enqueue_edition_completion(
-                str(work_id), format, user_id=str(user_id) if user_id is not None else None, schedule_time=when
-            )
-        except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
-            logger.exception("deferral re-enqueue failed for work %s format %s", work_id, format)
-            requeued = False
-        if not requeued:
-            logger.warning(
-                "over budget and could not defer completion of work %s format %s (%s) — dropping to the requeue sweep",
-                work_id,
-                format,
-                why,
-            )
-            return {"work_id": str(work_id), "format": format, "status": "deferred_enqueue_failed"}
-        logger.info(
-            "deferred edition completion of work %s format %s to %s (%s)", work_id, format, when.isoformat(), why
-        )
-        return {"work_id": str(work_id), "format": format, "status": "deferred", "until": when.isoformat()}
     # Pre-#100 tasks carry no user_id — run un-attributed exactly as before.
     ctx = as_user(user_id) if user_id is not None else contextlib.nullcontext()
     with ctx:
-        result = two_phase.complete_edition(work_id, format)
+        api_key: str | None = None
+        key_source = "app"
+        if user_id is not None:
+            # arc 3/3 BYOK — same resolution + no-silent-fallback rule as /internal/enrich,
+            # resolved BEFORE the budget gate below (task-2 review, spec AC#2).
+            try:
+                api_key, key_source = _resolve_byok_key(user_id)
+            except (byok.ByokKeyError, byok.ByokNotConfigured) as e:
+                logger.warning(
+                    "byok key resolution failed for complete-edition work_id=%s format=%s user_id=%s: %s",
+                    work_id,
+                    format,
+                    user_id,
+                    type(e).__name__,
+                )
+                return {"work_id": str(work_id), "format": format, "status": "byok_key_error"}
+        if api_key is None:
+            # App-key path only: a byok pass spends the user's own quota, so the tier-blind
+            # global governor and per-user app budgets don't apply to it — its usage rows
+            # are excluded from those counts by the key_source=='app' filter already.
+            allowed, why = budgets.enrichment_allowed(user_id)
+            if not allowed:
+                when = budgets.next_utc_day_start_with_jitter()
+                try:
+                    requeued = enqueue_edition_completion(
+                        str(work_id), format, user_id=str(user_id) if user_id is not None else None, schedule_time=when
+                    )
+                except Exception:  # noqa: BLE001 - deferral is best-effort; the sweep is the backstop
+                    logger.exception("deferral re-enqueue failed for work %s format %s", work_id, format)
+                    requeued = False
+                if not requeued:
+                    logger.warning(
+                        "over budget and could not defer completion of work %s format %s (%s) — dropping to the "
+                        "requeue sweep",
+                        work_id,
+                        format,
+                        why,
+                    )
+                    return {"work_id": str(work_id), "format": format, "status": "deferred_enqueue_failed"}
+                logger.info(
+                    "deferred edition completion of work %s format %s to %s (%s)",
+                    work_id,
+                    format,
+                    when.isoformat(),
+                    why,
+                )
+                return {"work_id": str(work_id), "format": format, "status": "deferred", "until": when.isoformat()}
+        result = (
+            two_phase.complete_edition(work_id, format, api_key=api_key, key_source=key_source)
+            if api_key is not None
+            else two_phase.complete_edition(work_id, format)
+        )
     if result == "missing":
         raise HTTPException(status_code=404, detail="work or edition not found")
     return {"work_id": str(work_id), "format": format, "status": result}

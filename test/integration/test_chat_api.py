@@ -119,6 +119,22 @@ def test_chat_message_over_length_returns_422(client, monkeypatch):
     assert resp.json()["detail"]["code"] == "message_too_long"
 
 
+def test_chat_byok_key_error_returns_409_pre_stream(client, monkeypatch):
+    # arc 3/3: a decrypt/config failure at resolution time must surface as a 409 before
+    # any streaming starts — never a silent fallback to the app key. The client fixture
+    # already points api_main.db_manager at the test DB, so this exercises the real
+    # resolve_gemini_key seam (patched only at the KMS-decrypt boundary).
+    from agentic_librarian.core import byok
+
+    def _raise(session, user_id):
+        raise byok.ByokKeyError("decrypt failed")
+
+    monkeypatch.setattr(byok, "resolve_gemini_key", _raise)
+    resp = client.post("/api/chat", json={"message": "hi"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "byok_key_error"
+
+
 @pytest.mark.parametrize(
     "seeded_today,expect_quota_blocked",
     [

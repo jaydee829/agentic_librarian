@@ -1,9 +1,10 @@
+import asyncio
 import os
 
 import pytest
 from google.genai import types
 
-from agentic_librarian.agents import runtime
+from agentic_librarian.agents import runtime, services
 from agentic_librarian.agents.services import create_agent_mesh
 
 
@@ -232,3 +233,147 @@ def test_explorer_discovers_real_books():
     response = conv.send("Find grimdark fantasy novels published in 2024. List each title and author.")
     assert isinstance(response, str)
     assert len(response.strip()) > 30
+
+
+# --- arc 3/3 BYOK: key threading through the chat mesh ---
+
+
+def test_gemini_without_api_key_constructs_a_plain_gemini():
+    # Unchanged from before this arc: no api_key kwarg means the model reads the app's
+    # process-wide GOOGLE_API_KEY (set by the autouse _adk_key fixture in tests).
+    model = services._gemini("model-x")
+    assert type(model) is services.Gemini
+    assert model.model == "model-x"
+
+
+def test_gemini_with_api_key_binds_a_client_to_that_key():
+    # ADK's Gemini (google-adk 2.2.0) has no api_key field of its own — a plain
+    # `Gemini(api_key=...)` kwarg is silently dropped. _gemini must route through the
+    # documented api_client-override extension point (_ByokGemini) instead, or the byok
+    # key never actually reaches google.genai.Client.
+    model = services._gemini("model-x", api_key="user-secret-key")
+    assert isinstance(model, services._ByokGemini)
+    assert model.model == "model-x"
+    assert model.byok_api_key == "user-secret-key"
+    assert model.api_client.models._api_client.api_key == "user-secret-key"
+
+
+def test_byok_gemini_never_exposes_the_key_in_repr_or_dumps():
+    # Leak-surface guard (arc 3/3 branch review I-1): the plaintext key must not appear
+    # in any serialized/printable form of the model — a future debug log or error
+    # reporter that reprs/dumps the agent tree must not print user secrets.
+    model = services._gemini("model-x", api_key="user-secret-key")
+    assert "user-secret-key" not in repr(model)
+    assert "user-secret-key" not in str(model)
+    assert "user-secret-key" not in str(model.model_dump())
+    assert "user-secret-key" not in model.model_dump_json()
+    # The key still WORKS (excluded from serialization, not from the attribute).
+    assert model.byok_api_key == "user-secret-key"
+
+
+def test_gemini_byok_generate_content_async_actually_uses_the_byok_client(monkeypatch):
+    """Behavioral canary (task-3 review): the construction-level test above proves
+    `.api_client` is BOUND to the byok key, but that alone doesn't prove ADK's REAL call
+    path reads `self.api_client` at call time — a future google-adk (pinned
+    `>=2.1.0`, unbounded — CI resolves fresh) could route `generate_content_async`
+    through a different attribute or a module-level client, and this would silently
+    fall back to the app key while the construction test above kept passing. This drives
+    the actual entry point the mesh calls (`generate_content_async`), mocking only the
+    network boundary (`AsyncModels.generate_content`), and fails loudly the moment a
+    future ADK version stops consulting `self.api_client` for the real call."""
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types as genai_types
+
+    model = services._gemini("model-x", api_key="canary-byok-key")
+    client = model.api_client  # forces construction; api_client is cached, so the real
+    # call below reuses this exact instance — not a fresh one.
+    assert client.models._api_client.api_key == "canary-byok-key"
+
+    captured: dict = {}
+
+    async def fake_generate_content(*, model, contents, config):
+        # The real network boundary. Read the key off the client instance that is
+        # actually executing the call — not off `model`/`_gemini`'s return value — so
+        # this fails if a future ADK routes the call through some OTHER client.
+        captured["key"] = client.models._api_client.api_key
+        return genai_types.GenerateContentResponse()
+
+    monkeypatch.setattr(client.aio.models, "generate_content", fake_generate_content)
+
+    llm_request = LlmRequest(
+        model="model-x", contents=[genai_types.Content(role="user", parts=[genai_types.Part(text="hi")])]
+    )
+
+    async def _drive():
+        return [r async for r in model.generate_content_async(llm_request)]
+
+    responses = asyncio.run(_drive())
+
+    assert captured.get("key") == "canary-byok-key"
+    assert responses  # the fake response was consumed all the way to an LlmResponse
+
+
+@pytest.mark.parametrize(
+    "api_key",
+    [pytest.param("user-secret-key", id="byok_key_threaded"), pytest.param(None, id="app_key_default")],
+)
+def test_create_agent_mesh_threads_api_key_to_every_agent(monkeypatch, api_key):
+    calls = []
+
+    def fake_gemini(model_name, key=None):
+        calls.append((model_name, key))
+        return services.Gemini(model=model_name)
+
+    monkeypatch.setattr(services, "_gemini", fake_gemini)
+    services.create_agent_mesh(api_key=api_key)
+    # Analyst, Explorer (the grounding model too), Critic, Librarian.
+    assert len(calls) == 4
+    assert all(key == api_key for _, key in calls)
+
+
+def test_build_runner_threads_api_key_into_create_agent_mesh(monkeypatch):
+    captured = {}
+
+    def fake_create_agent_mesh(api_key=None):
+        captured["api_key"] = api_key
+        return create_agent_mesh()
+
+    monkeypatch.setattr(runtime, "create_agent_mesh", fake_create_agent_mesh)
+    runtime.build_runner(api_key="byok-key")
+    assert captured["api_key"] == "byok-key"
+
+
+def test_astart_conversation_threads_api_key_into_build_runner_when_no_runner_given(monkeypatch):
+    captured = {}
+
+    def fake_build_runner(api_key=None):
+        captured["api_key"] = api_key
+        return _FakeRunner()
+
+    monkeypatch.setattr(runtime, "build_runner", fake_build_runner)
+    asyncio.run(runtime.astart_conversation(user_id="u", session_id="s", api_key="byok-key"))
+    assert captured["api_key"] == "byok-key"
+
+
+def test_astart_conversation_does_not_rebuild_an_explicitly_passed_runner(monkeypatch):
+    # A caller-supplied runner's mesh is already fixed — api_key threading only applies
+    # when astart_conversation builds the runner itself.
+    def fail_build_runner(api_key=None):
+        raise AssertionError("build_runner must not be called when a runner is passed")
+
+    monkeypatch.setattr(runtime, "build_runner", fail_build_runner)
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s", api_key="byok-key"))
+    assert conv is not None
+
+
+def test_astart_conversation_carries_key_source_onto_the_conversation():
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s", key_source="byok"))
+    assert conv.key_source == "byok"
+
+
+def test_astart_conversation_key_source_defaults_to_app():
+    fake = _FakeRunner()
+    conv = asyncio.run(runtime.astart_conversation(user_id="u", runner=fake, session_id="s"))
+    assert conv.key_source == "app"

@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from agentic_librarian.agents.runtime import LibrarianConversation, astart_conversation
 from agentic_librarian.api import analysis, auth, recommendations
 from agentic_librarian.api import availability as availability_api
+from agentic_librarian.api import credentials as credentials_api
 from agentic_librarian.api import imports as imports_api
 from agentic_librarian.api import kofi as kofi_api
 from agentic_librarian.api import libraries as libraries_api
@@ -23,6 +24,7 @@ from agentic_librarian.api.analysis import router as analysis_router
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
 from agentic_librarian.api.availability import router as availability_router
 from agentic_librarian.api.books import router as books_router
+from agentic_librarian.api.credentials import router as credentials_router
 from agentic_librarian.api.firebase_auth_proxy import router as firebase_auth_proxy_router
 from agentic_librarian.api.imports import router as imports_router
 from agentic_librarian.api.internal import router as internal_router
@@ -30,7 +32,7 @@ from agentic_librarian.api.kofi import router as kofi_router
 from agentic_librarian.api.libraries import router as libraries_router
 from agentic_librarian.api.recommendations import router as recommendations_router
 from agentic_librarian.chat import stream, transcript
-from agentic_librarian.core import budgets, tiers, usage
+from agentic_librarian.core import budgets, byok, tiers, usage
 from agentic_librarian.core.user_context import as_user
 from agentic_librarian.db.get_or_create import get_or_create
 from agentic_librarian.db.migration_guard import check_migrations
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
     imports_api.set_db_manager(shared)
     availability_api.set_db_manager(shared)
     libraries_api.set_db_manager(shared)
+    credentials_api.set_db_manager(shared)
     # GH #102: the in-process chat tools (mcp/server), the enrichment paths
     # (two_phase), and the import worker previously each held their own lazy pool —
     # up to ~9 engines/process. One pool per process keeps the connection math sane.
@@ -121,6 +124,7 @@ api_router.include_router(availability_router)
 api_router.include_router(books_router)
 api_router.include_router(imports_router)
 api_router.include_router(libraries_router)
+api_router.include_router(credentials_router)
 
 # Machine-only routers stay at root — never SPA-route collisions, and moving them would
 # break fixed contracts (Firebase /__/auth/*) or Cloud Tasks target URLs (/internal/*).
@@ -431,21 +435,42 @@ def get_works(
 # ---------------------------------------------------------------------------
 
 
-async def _open_conversation(*, user_id: str, session_id: str, history: list[dict], on_event) -> LibrarianConversation:
+async def _open_conversation(
+    *,
+    user_id: str,
+    session_id: str,
+    history: list[dict],
+    on_event,
+    api_key: str | None = None,
+    key_source: str = "app",
+) -> LibrarianConversation:
     """Open the mesh conversation for one turn (seam: tests replace this)."""
-    return await astart_conversation(user_id=user_id, session_id=session_id, history=history, on_event=on_event)
+    return await astart_conversation(
+        user_id=user_id,
+        session_id=session_id,
+        history=history,
+        on_event=on_event,
+        api_key=api_key,
+        key_source=key_source,
+    )
 
 
 class _SyncOpener:
     """The conversation object returned by the factory passed to sse_turn. Lazily opens
     the async mesh conversation on first asend — deferred so the open runs inside the
     event loop, not the sync endpoint frame. session_id = conversation_id.hex so usage
-    rows (keyed off the ADK session uuid) FK to the transcript row."""
+    rows (keyed off the ADK session uuid) FK to the transcript row.
 
-    def __init__(self, user_id, ctx, on_event):
+    api_key/key_source (arc 3/3 BYOK): resolved once per turn by the chat handler
+    (before this object is constructed) and carried through to astart_conversation so
+    the whole mesh for this turn runs on the byok user's key."""
+
+    def __init__(self, user_id, ctx, on_event, api_key: str | None = None, key_source: str = "app"):
         self._user_id = user_id
         self._ctx = ctx
         self._on_event = on_event
+        self._api_key = api_key
+        self._key_source = key_source
         self._conv = None  # opened lazily on first asend
 
     async def asend(self, message: str) -> str:
@@ -455,6 +480,8 @@ class _SyncOpener:
                 session_id=self._ctx.conversation_id.hex,
                 history=self._ctx.history,
                 on_event=self._on_event,
+                api_key=self._api_key,
+                key_source=self._key_source,
             )
         return await self._conv.asend(message)
 
@@ -494,6 +521,21 @@ def new_conversation(user: AuthenticatedUser = Depends(get_current_user)):  # no
     return {"id": str(ctx.conversation_id), "messages": ctx.history}
 
 
+def _resolve_byok_chat_key(user_id: UUID) -> tuple[str | None, str]:
+    """Resolve the caller's byok Gemini key for one chat turn (arc 3/3, mirrors
+    api/internal.py's `_resolve_byok_key`). Returns (api_key, key_source) — (None, "app")
+    when the user has no byok credential (the common case). A short session off this
+    module's db_manager — not worth holding one across the whole mesh turn. Raises
+    byok.ByokKeyError/ByokNotConfigured on decrypt/config failure so the handler can
+    surface the documented 409 pre-stream (spec §3) instead of silently falling back to
+    the app key."""
+    with db_manager.get_session() as session:
+        key = byok.resolve_gemini_key(session, user_id)
+    if key is None:
+        return None, "app"
+    return key, "byok"
+
+
 @api_router.post("/chat")
 def chat(user: AuthenticatedUser = Depends(get_current_user), message: str = Body(..., embed=True)):  # noqa: B008
     max_chars = tiers.chat_message_max_chars()
@@ -506,13 +548,25 @@ def chat(user: AuthenticatedUser = Depends(get_current_user), message: str = Bod
     if not allowed:
         # Must reject BEFORE the StreamingResponse exists — SSE cannot carry an HTTP 429.
         raise HTTPException(status_code=429, detail={"code": "chat_quota", "message": why})
+    try:
+        api_key, key_source = _resolve_byok_chat_key(user.id)
+    except (byok.ByokKeyError, byok.ByokNotConfigured):
+        # arc 3/3: must reject BEFORE the StreamingResponse exists, same as the 429 above
+        # — SSE cannot carry an HTTP error status once streaming has started. No silent
+        # fallback to the app key (spec §"No silent fallback").
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "byok_key_error", "message": "Your API key failed — check Settings."},
+        ) from None
     with as_user(user.id):
         ctx = transcript.get_or_create_active_conversation()
     adk_user_id = str(user.id)
     return StreamingResponse(
         stream.sse_turn(
             message=message,
-            conversation=lambda on_event: _SyncOpener(adk_user_id, ctx, on_event),
+            conversation=lambda on_event: _SyncOpener(
+                adk_user_id, ctx, on_event, api_key=api_key, key_source=key_source
+            ),
             on_persist=lambda role, content: transcript.append_message(ctx.conversation_id, role, content),
             user_id=user.id,
         ),
