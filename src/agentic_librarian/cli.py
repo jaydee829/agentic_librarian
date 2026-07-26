@@ -176,6 +176,11 @@ def _run_user_subscribe(args) -> int:
     if not _is_valid_email(email):
         print(f"error: {email!r} does not look like an email address", file=sys.stderr)
         return 2
+    # Guardrail on a prod-mutating tool: a fat-fingered `--days -30` must not silently
+    # revoke paid time. Reducing/revoking is deliberate-only, via the absolute --until.
+    if (args.days is not None and args.days <= 0) or (args.months is not None and args.months <= 0):
+        print("error: --months/--days must be positive (to reduce or revoke, use --until)", file=sys.stderr)
+        return 2
     db = _invite_db_manager()
     with db.get_session() as session:
         user = session.query(User).filter(User.email == email).first()
