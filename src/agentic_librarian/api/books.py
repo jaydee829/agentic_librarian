@@ -55,7 +55,10 @@ class AddBookRequest(BaseModel):
 
 @router.post("/books")
 def add_book(req: AddBookRequest, user: AuthenticatedUser = Depends(get_current_user)):  # noqa: B008
-    fast = two_phase.enrich_fast(req.title, req.author, req.format)
+    # as_user covers the fast pass so its embed cache-miss metering attributes to the
+    # requester (#100 AC#1) — fast scouts make no grounded calls, so no budget effect.
+    with as_user(user.id):
+        fast = two_phase.enrich_fast(req.title, req.author, req.format)
     if fast is None:
         raise HTTPException(
             status_code=404,
