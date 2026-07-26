@@ -37,6 +37,7 @@ from agentic_librarian.db.migration_guard import check_migrations
 from agentic_librarian.db.models import (
     Edition,
     ReadingHistory,
+    User,
     Work,
     WorkContributor,
     WorkStyle,
@@ -460,6 +461,23 @@ class _SyncOpener:
     def close(self):
         if self._conv is not None:
             self._conv.close()
+
+
+@api_router.get("/account")
+def get_account(user: AuthenticatedUser = Depends(get_current_user)):  # noqa: B008
+    """Identity + entitlement summary for the avatar menu (#100 monetization arc 2/3).
+    tier comes from tiers.effective_tier — the single source of truth; no second
+    computation here."""
+    with db_manager.get_session() as session:
+        tier = tiers.effective_tier(session, user.id)
+        row = session.get(User, user.id)
+        until = row.subscriber_until.isoformat() if row and row.subscriber_until else None
+        return {
+            "email": row.email if row else None,
+            "display_name": row.display_name if row else None,
+            "tier": tier,
+            "subscriber_until": until,
+        }
 
 
 @api_router.get("/conversations/current")

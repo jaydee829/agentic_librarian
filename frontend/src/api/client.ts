@@ -118,6 +118,17 @@ export interface SavedLibrary {
   name: string
 }
 
+export interface Account {
+  email: string
+  display_name: string | null
+  tier: 'free' | 'supporter' | 'byok'
+  subscriber_until: string | null
+}
+
+export function getAccount(): Promise<Account> {
+  return getJson<Account>('/account')
+}
+
 /** fetch with the Firebase ID token attached. */
 async function authedFetchRaw(path: string, init: RequestInit = {}): Promise<Response> {
   const token = await getIdToken()

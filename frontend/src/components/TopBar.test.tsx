@@ -6,6 +6,12 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ user: { email: 'a@b.com', displayName: 'A' }, signOut: vi.fn() }),
 }))
 
+// AccountMenu fetches lazily on first open — TopBar rendering alone must not need a
+// real client, but AccountMenu.tsx imports it at module scope.
+vi.mock('../api/client', () => ({
+  getAccount: vi.fn(),
+}))
+
 import TopBar from './TopBar'
 
 afterEach(() => {
@@ -27,5 +33,14 @@ describe('TopBar branding', () => {
   it('shows the Shelfwright product name', () => {
     render(<TopBar />)
     expect(screen.getByText('Shelfwright')).toBeInTheDocument()
+  })
+})
+
+describe('TopBar account menu', () => {
+  it('renders the avatar as the account menu trigger, with no standalone sign-out button', () => {
+    render(<TopBar />)
+    const trigger = screen.getByRole('button', { name: /account menu/i })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: /^sign out$/i })).not.toBeInTheDocument()
   })
 })
