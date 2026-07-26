@@ -27,6 +27,13 @@ router = APIRouter()
 
 MAX_ROWS = 2000
 STALLED_AFTER = timedelta(minutes=15)
+# #100 review fix: bounds the in-flight-import lockout. An import-row task has no give-up
+# retry bound (unlike /internal/enrich's GIVE_UP_AFTER_RETRIES), and job recovery UI lives
+# only in React state — so a row wedged in 'processing' forever would otherwise block every
+# future commit for that user permanently. Invariant: a wedged job stops counting as
+# in-flight once it's older than this window; the daily enrichment budget still bounds the
+# cost of any rows from an overlapping "second" import that slips through afterward.
+IN_FLIGHT_WINDOW = timedelta(hours=24)
 
 db_manager = DatabaseManager()
 
@@ -146,21 +153,33 @@ async def commit(
         limit = min(MAX_ROWS, tiers.import_max_rows(tier))
         row_count = len(parsed)
         if row_count > limit:
+            # Un-hardcode the upsell figure (env-tunable, #100 review fix) and only pitch
+            # it to a free-tier user — a supporter already at their ceiling shouldn't be
+            # told to "support" for a limit they already have.
+            supporter_limit = min(MAX_ROWS, tiers.import_max_rows("supporter"))
+            message = f"This import has {row_count} rows; your current limit is {limit}. Split the file"
+            message += (
+                f" — or support Shelfwright for the full {supporter_limit:,}-row limit." if tier == "free" else "."
+            )
             raise HTTPException(
                 status_code=413,
-                detail={
-                    "code": "import_rows_limit",
-                    "message": f"This import has {row_count} rows; your current limit is {limit}. "
-                    "Split the file — or support Shelfwright for the full 2,000-row limit.",
-                },
+                detail={"code": "import_rows_limit", "message": message},
             )
 
         # One in-flight import at a time (#100): a prior commit's rows still pending/processing
-        # blocks a new commit — avoids two jobs' Cloud Tasks racing on the same user's history.
+        # on a RECENT job (#100 review fix, see IN_FLIGHT_WINDOW) blocks a new commit — avoids
+        # two jobs' Cloud Tasks racing on the same user's history. Two concurrent commits can
+        # both pass this check before either writes its job (query-then-insert race) — accepted:
+        # the worst case is two jobs' worth of duplicate rows, never corruption, and the daily
+        # enrichment budget still bounds the cost.
         in_flight = (
             session.query(ImportRow.id)
             .join(ImportJob, ImportJob.id == ImportRow.import_job_id)
-            .filter(ImportJob.user_id == user.id, ImportRow.status.in_(("pending", "processing")))
+            .filter(
+                ImportJob.user_id == user.id,
+                ImportRow.status.in_(("pending", "processing")),
+                ImportJob.created_at >= datetime.now(UTC) - IN_FLIGHT_WINDOW,
+            )
             .first()
         )
         if in_flight is not None:

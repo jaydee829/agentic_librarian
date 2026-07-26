@@ -16,7 +16,7 @@ from agentic_librarian.api import imports as imports_mod
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
 from agentic_librarian.api.imports import router
 from agentic_librarian.core.user_context import DEFAULT_USER_EMAIL, DEFAULT_USER_ID
-from agentic_librarian.db.models import ImportRow, User
+from agentic_librarian.db.models import ImportJob, ImportRow, User
 from agentic_librarian.db.session import DatabaseManager
 
 pytestmark = pytest.mark.db_integration
@@ -72,12 +72,32 @@ def test_supporter_tier_same_file_passes(client, monkeypatch):
 
 
 def test_second_commit_while_first_still_pending_is_409(client):
+    """A RECENT in-flight job (created just now, by the commit above) blocks — the other
+    half of the #100 review fix's window invariant."""
     c, _manager = client
     first = _commit(c, 2)
     assert first.status_code == 200
     second = _commit(c, 2)
     assert second.status_code == 409
     assert second.json()["detail"]["code"] == "import_in_flight"
+
+
+def test_old_wedged_pending_row_does_not_block_a_new_commit(client):
+    """#100 review fix: an import-row task has no give-up retry bound and job-recovery UI
+    lives only in React state, so a row permanently wedged in 'pending'/'processing' must
+    not lock the user out of ever importing again. A job older than IN_FLIGHT_WINDOW no
+    longer counts as in-flight. #147 lesson: seed created_at explicitly, don't rely on
+    wall-clock proximity to a boundary."""
+    c, manager = client
+    stale = datetime.now(UTC) - timedelta(hours=25)  # older than the 24h IN_FLIGHT_WINDOW
+    with manager.get_session() as s:
+        job = ImportJob(user_id=DEFAULT_USER_ID, source="goodreads", total_rows=1, created_at=stale)
+        s.add(job)
+        s.flush()
+        s.add(ImportRow(import_job_id=job.id, user_id=DEFAULT_USER_ID, destination="history", status="pending"))
+
+    r = _commit(c, 2)
+    assert r.status_code == 200
 
 
 def test_commit_allowed_again_once_all_rows_reach_terminal_status(client):

@@ -141,13 +141,34 @@ def test_commit_422_when_required_mapping_missing(monkeypatch):
 
 def test_commit_413_when_over_tier_row_limit(monkeypatch):
     """#100: wiring check only — the real free/supporter/DB-driven cap resolution is
-    covered end-to-end against Postgres in test_api_import_caps.py."""
-    monkeypatch.setattr(imports_mod.tiers, "import_max_rows", lambda tier: 1)
+    covered end-to-end against Postgres in test_api_import_caps.py. Uses the real env
+    knob (not a stubbed tiers.import_max_rows) so the message's interpolated numbers stay
+    honest: the free limit shown must be the small override, and the supporter upsell
+    figure must be the real (untouched) env-tunable ceiling — not hardcoded text (#100
+    review fix)."""
+    monkeypatch.setenv("IMPORT_MAX_ROWS_FREE", "1")
     r, rec, enq = _commit(monkeypatch)
     assert r.status_code == 413
     body = r.json()["detail"]
     assert body["code"] == "import_rows_limit"
+    assert "your current limit is 1" in body["message"]
+    assert "support Shelfwright for the full 2,000-row limit" in body["message"]
     assert rec.jobs == []  # rejected before anything was written
+    assert enq == []
+
+
+def test_commit_413_over_supporter_cap_has_no_upsell_pitch(monkeypatch):
+    """#100 review fix: a supporter already at their own ceiling shouldn't be told to
+    'support Shelfwright' for a limit they already have."""
+    monkeypatch.setattr(imports_mod.tiers, "effective_tier", lambda session, user_id: "supporter")
+    monkeypatch.setenv("IMPORT_MAX_ROWS_SUPPORTER", "1")
+    r, rec, enq = _commit(monkeypatch)
+    assert r.status_code == 413
+    body = r.json()["detail"]
+    assert body["code"] == "import_rows_limit"
+    assert "your current limit is 1" in body["message"]
+    assert "support Shelfwright" not in body["message"]
+    assert rec.jobs == []
     assert enq == []
 
 
