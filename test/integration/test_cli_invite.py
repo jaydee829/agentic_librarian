@@ -181,21 +181,44 @@ def test_payments_list_without_filter_shows_matched_and_unmatched(_cli_db, capsy
 
 
 @pytest.mark.parametrize(
-    "event_type,duration_type,expected_kind,expected_days",
+    "event_type,duration_type,expected_kind,expected_days,payload",
     [
-        pytest.param("membership.started", "month", "monthly", 33, id="monthly"),
-        pytest.param("membership.started", "year", "annual", 370, id="annual"),
-        pytest.param("donation.created", None, "tip", 0, id="tip-no-entitlement"),
+        pytest.param("membership.started", "month", "monthly", 33, {}, id="monthly-fallback-extend"),
+        pytest.param("membership.started", "year", "annual", 370, {}, id="annual-fallback-extend"),
+        pytest.param("donation.created", None, "tip", 0, {}, id="tip-no-entitlement"),
+        pytest.param(
+            "membership.started",
+            "month",
+            "monthly",
+            None,
+            {"data": {"current_period_end": int((datetime.now(UTC) + timedelta(days=2)).timestamp())}},
+            id="monthly-horizon-period-end-2days",
+        ),
+        pytest.param(
+            "membership.started",
+            "year",
+            "annual",
+            None,
+            {"data": {"current_period_end": int((datetime.now(UTC) + timedelta(days=100)).timestamp())}},
+            id="annual-horizon-period-end-100days",
+        ),
     ],
 )
 def test_payments_match_recomputes_entitlement_from_stored_row(
-    _cli_db, capsys, event_type, duration_type, expected_kind, expected_days
+    _cli_db, capsys, event_type, duration_type, expected_kind, expected_days, payload
 ):
     """match must recompute classify()/horizon()/apply_grant() from the STORED payment
     fields (event_type, duration_type, payload) — not anything on the command line — so
-    CLI and webhook grant identically. The seeded payload has no current_period_end, so
-    the grant falls back to entitlements.extend() at grant_days(kind) — same 33/370/0
-    day figures as the flat Ko-fi grants this replaces."""
+    CLI and webhook grant identically.
+
+    When payload has no current_period_end (empty dict), the grant falls back to
+    entitlements.extend() at grant_days(kind) — same 33/370/0 day figures as the
+    flat Ko-fi grants this replaces.
+
+    When payload contains current_period_end (horizon path), the grant uses
+    horizon(period_end) = period_end + grace_days (default 5), exercising the
+    primary payment-driven path. These cases pick timestamps that yield visibly
+    different results from extend() to catch accidental fallback."""
     email = f"match-{expected_kind}@example.com"
     event_id = f"txn-{expected_kind}"
     user_id = _seed_user(_cli_db, email)
@@ -206,6 +229,7 @@ def test_payments_match_recomputes_entitlement_from_stored_row(
         email=email,
         amount=Decimal("5.00"),
         duration_type=duration_type,
+        payload=payload,
     )
     before = datetime.now(UTC)
     assert main(["payments", "match", event_id, email]) == 0
@@ -213,14 +237,24 @@ def test_payments_match_recomputes_entitlement_from_stored_row(
         payment = session.query(Payment).filter(Payment.provider_event_id == event_id).one()
         refreshed = session.get(User, user_id)
         assert payment.matched_user_id == user_id
-        if expected_days > 0:
+        if expected_kind == "tip":
+            assert refreshed.subscriber_until is None
+            assert payment.granted_until is None
+        elif payload and "data" in payload and "current_period_end" in payload["data"]:
+            # Horizon path: subscriber_until = period_end + grace_days (5)
+            period_end_ts = payload["data"]["current_period_end"]
+            period_end_dt = datetime.fromtimestamp(period_end_ts, tz=UTC)
+            expected_dt = period_end_dt + timedelta(days=5)
+            expected_min = expected_dt - SLACK
+            expected_max = expected_dt + SLACK
+            assert expected_min <= refreshed.subscriber_until <= expected_max
+            assert expected_min <= payment.granted_until <= expected_max
+        else:
+            # Fallback extend path: subscriber_until = now + grant_days(kind)
             expected_min = before + timedelta(days=expected_days) - SLACK
             expected_max = before + timedelta(days=expected_days) + SLACK
             assert expected_min <= refreshed.subscriber_until <= expected_max
             assert expected_min <= payment.granted_until <= expected_max
-        else:
-            assert refreshed.subscriber_until is None
-            assert payment.granted_until is None
 
 
 def test_payments_match_refuses_unknown_transaction(_cli_db, capsys):
