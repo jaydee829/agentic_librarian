@@ -428,3 +428,22 @@ This file tracks work history and ticket references.
   Leave-as-is residuals: repoint-path N+1 (bounded), no null-format "—" frontend test,
   legacy non-vocab formats display wrong in the edit select (GH #81's bulk-normalization
   scope). Follow-up moment: "details filling in" affordance when narrators surface in UI.
+
+## OPEN — Payment-provider decision (2026-07-31): Ko-fi vs Buy Me a Coffee vs Polar
+
+- **Status**: #155 (metering/tiers/budgets) MERGED + deployed; **#156 (Ko-fi) and #157
+  (BYOK) are OPEN and ON HOLD** pending the provider decision.
+- **Why reopened**: Ko-fi has no auto-renewing annual subscription (our #156 workaround:
+  one-off/shop product ≥ $25 → +370 days, but no auto-renew and no expiry nudges) and its
+  webhook sends NO cancellation/lifecycle events (entitlement is inference: +33/+370-day
+  grants with grace baked in). Candidates: Buy Me a Coffee (likely $4/mo to cover fees;
+  monthly+annual memberships; webhook contract to verify) and Polar (merchant of record —
+  handles VAT/sales tax; real subscription lifecycle webhooks incl. cancellations, which
+  would eliminate the inference design; ~4%+40¢; heavier integration).
+- **Swap cost is bounded by design** (ADR-064): #156's provider-specific surface is the
+  webhook adapter (`api/kofi.py`) + env config + 3 link URLs in AccountMenu; the payments
+  table, `core/entitlements.py`, CLI, `/api/account`, and the dropdown are neutral.
+  #157 (BYOK) is provider-independent (needs only #156's AccountMenu + account endpoint).
+- **Next**: researched comparison (fees, webhook contracts, annual, payouts, MoR/tax) →
+  decide provider or hybrid → salvage plan for #156 (keep neutral core, swap adapter) and
+  rebase/adapt #157.

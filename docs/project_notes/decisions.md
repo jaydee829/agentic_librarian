@@ -1249,3 +1249,38 @@ This file documents key architectural decisions, their context, and trade-offs.
   5 skipped, 5 deselected, 0 failed. CLAUDE.md's "stash-verify" subsection is now retired.
 - `db_integration` deselection is unaffected — that path still works via the conftest hook
   (it is orthogonal to the `-m` marker filter).
+
+### ADR-064: Monetization architecture — metered tiers, provider-adapter payments, BYOK (2026-07-26; #155 merged 2026-07-31)
+
+- **Context:** #100 (Phase 6.4) required cost/abuse guards before onboarding dozens; the
+  user chose to monetize: supporter subscriptions + tips, BYOK free tier.
+- **Decision (three stacked PRs):**
+  1. **#155 (MERGED `ae252f8`): metering + tiers + budgets.** Every LLM/embed call writes
+     an attributed `usage` row (Cloud Tasks payloads carry `user_id`; handlers `as_user`);
+     computed tier `free|supporter|byok` (`core/tiers.py`, from `users.subscriber_until` +
+     credential-row existence); env-tunable budgets enforced fail-open at chokepoints
+     (`core/budgets.py`, counting queries — no Redis): chat turns/day (20/200/×10) + 4k-char
+     cap → 429/422 pre-stream; import rows/import (300/2000) + one-in-flight (24h-bounded)
+     → 413/409; per-user + GLOBAL grounded-call budgets with next-UTC-day `schedule_time`
+     deferral (never burns the #97 give-up count). Spec:
+     `docs/superpowers/specs/2026-07-25-metering-tiers-budgets-design.md`.
+  2. **#156 (OPEN, ON HOLD): payment-provider integration**, built as Ko-fi but mostly
+     provider-neutral: `payments` audit table, pure `core/entitlements.py` (+33d monthly /
+     +370d annual, `max(now, current)+days`), operator CLI (`user subscribe`,
+     `payments list/match`), `GET /api/account`, avatar-dropdown AccountMenu. The
+     provider-SPECIFIC surface is one webhook adapter (`api/kofi.py`) + env + link URLs.
+  3. **#157 (OPEN, ON HOLD): BYOK** — KMS-encrypted user Gemini keys; parameter-threaded
+     routing (mesh via `_ByokGemini` ADK `api_client` override + behavioral canary; scouts
+     via `api_key`/`key_source`); byok bypasses app-key budget gates; embeddings stay
+     app-keyed; NO silent fallback (503/422/409/task-200 error taxonomy). Payment-provider
+     independent (stacks on #156 only for AccountMenu + `/api/account`).
+- **Provider decision REOPENED (2026-07-31):** Ko-fi lacks auto-renewing annual (worked
+  around via one-off ≥$25 → +370d, no auto-renew) and sends no cancellation events.
+  Investigating Buy Me a Coffee and Polar (merchant of record, real lifecycle webhooks)
+  before merging #156/#157. The adapter-shaped design bounds the swap cost.
+- **Residuals (documented in PR bodies):** queue fairness deferred; `kms_key_name` column
+  write-only (never repoint `KMS_KEY_NAME` at a different CryptoKey resource);
+  Message/Usage.created_at unindexed day-window counts; webhook request-size unbounded
+  below Cloud Run's 32MB.
+- **Ops at #155 rollout:** flip the shared Gemini key to paid tier (interim:
+  `GROUNDED_CALLS_PER_DAY_GLOBAL=450` — free tier grounding is 500 RPD).
