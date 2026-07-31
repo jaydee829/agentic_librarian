@@ -38,7 +38,7 @@
   - `grant_days(kind: Kind) -> int` (fallback grants: monthly 33, annual 370, else 0)
   - `grace_days() -> int` (env `BMC_GRACE_DAYS`, default 5)
   - `ts_to_dt(value: object) -> datetime | None` (unix-ts guard)
-  - `horizon(current_period_end: datetime | None, now: datetime | None = None) -> datetime | None`
+  - `horizon(current_period_end: datetime | None) -> datetime | None` (AS BUILT in Task 1 — no `now` parameter)
   - `apply_grant(current: datetime | None, new_horizon: datetime) -> datetime`
   - `apply_cap(current: datetime | None, cap: datetime) -> datetime | None`
   - `extend(current: datetime | None, days: int, now: datetime | None = None) -> datetime` (unchanged semantics — CLI + fallback path)
@@ -148,9 +148,8 @@ def extend(current: datetime | None, days: int, now: datetime | None = None) -> 
     return base + timedelta(days=days)
 ```
 
-  Note `horizon()` keeps its `now` parameter only if the tests need injection — it is
-  currently unused; drop the parameter if ruff flags it (and mirror in the signature
-  listed under Interfaces).
+  (Resolved during Task 1: `horizon()` shipped WITHOUT a `now` parameter — the
+  Interfaces list above is the as-built contract.)
 
 - [ ] **Step 4: Run to verify pass** — `.venv/Scripts/python -m pytest test/unit/test_entitlements.py -q` → all green.
 - [ ] **Step 5: Lint, format, full unit suite, commit** — `uvx ruff check` + `uvx ruff format` on both files; `.venv/Scripts/python -m pytest test/unit -q`; commit `feat(entitlements): BMC period-end+grace model replaces Ko-fi grant heuristics (revector 1/4)`.
