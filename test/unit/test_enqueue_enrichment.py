@@ -1,3 +1,7 @@
+from datetime import UTC, datetime
+
+import pytest
+
 from agentic_librarian.enrichment import tasks
 
 
@@ -68,3 +72,91 @@ def test_enqueue_edition_completion_skips_when_not_configured(monkeypatch):
 
     assert tasks.enqueue_edition_completion("abc", "audiobook") is False
     assert called["n"] == 0
+
+
+@pytest.mark.parametrize(
+    "user_id,expected_url",
+    [
+        (
+            "22222222-2222-4222-8222-222222222222",
+            "https://librarian.example.run.app/internal/enrich/"
+            "11111111-1111-4111-8111-111111111111?user_id=22222222-2222-4222-8222-222222222222",
+        ),
+        (None, "https://librarian.example.run.app/internal/enrich/11111111-1111-4111-8111-111111111111"),
+    ],
+)
+def test_enqueue_enrichment_appends_user_id_query_when_given(monkeypatch, user_id, expected_url):
+    _set_env(monkeypatch)
+    fake = _FakeClient()
+    monkeypatch.setattr(tasks, "_client", lambda: fake)
+
+    assert tasks.enqueue_enrichment("11111111-1111-4111-8111-111111111111", user_id=user_id) is True
+
+    _parent, task = fake.created[0]
+    http = task["http_request"]
+    assert http["url"] == expected_url
+    # Audience is the bare path url regardless of user_id — a per-user audience would never
+    # match the receiver's single fixed ENRICH_OIDC_AUDIENCE.
+    assert http["oidc_token"]["audience"] == (
+        "https://librarian.example.run.app/internal/enrich/11111111-1111-4111-8111-111111111111"
+    )
+
+
+@pytest.mark.parametrize(
+    "user_id,expected_url",
+    [
+        (
+            "22222222-2222-4222-8222-222222222222",
+            "https://librarian.example.run.app/internal/complete-edition/"
+            "11111111-1111-4111-8111-111111111111?format=audiobook"
+            "&user_id=22222222-2222-4222-8222-222222222222",
+        ),
+        (
+            None,
+            "https://librarian.example.run.app/internal/complete-edition/"
+            "11111111-1111-4111-8111-111111111111?format=audiobook",
+        ),
+    ],
+)
+def test_enqueue_edition_completion_appends_user_id_query_when_given(monkeypatch, user_id, expected_url):
+    _set_env(monkeypatch)
+    fake = _FakeClient()
+    monkeypatch.setattr(tasks, "_client", lambda: fake)
+
+    assert (
+        tasks.enqueue_edition_completion("11111111-1111-4111-8111-111111111111", "audiobook", user_id=user_id) is True
+    )
+
+    _parent, task = fake.created[0]
+    http = task["http_request"]
+    assert http["url"] == expected_url
+    assert http["oidc_token"]["audience"] == (
+        "https://librarian.example.run.app/internal/complete-edition/11111111-1111-4111-8111-111111111111"
+    )
+
+
+def test_enqueue_enrichment_sets_schedule_time_on_task(monkeypatch):
+    _set_env(monkeypatch)
+    fake = _FakeClient()
+    monkeypatch.setattr(tasks, "_client", lambda: fake)
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+
+    assert tasks.enqueue_enrichment("11111111-1111-4111-8111-111111111111", schedule_time=when) is True
+
+    _parent, task = fake.created[0]
+    assert task["schedule_time"] == when
+
+
+def test_enqueue_edition_completion_sets_schedule_time_on_task(monkeypatch):
+    _set_env(monkeypatch)
+    fake = _FakeClient()
+    monkeypatch.setattr(tasks, "_client", lambda: fake)
+    when = datetime(2026, 8, 1, tzinfo=UTC)
+
+    assert (
+        tasks.enqueue_edition_completion("11111111-1111-4111-8111-111111111111", "audiobook", schedule_time=when)
+        is True
+    )
+
+    _parent, task = fake.created[0]
+    assert task["schedule_time"] == when

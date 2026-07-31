@@ -28,7 +28,7 @@ from agentic_librarian.api.internal import router as internal_router
 from agentic_librarian.api.libraries import router as libraries_router
 from agentic_librarian.api.recommendations import router as recommendations_router
 from agentic_librarian.chat import stream, transcript
-from agentic_librarian.core import usage
+from agentic_librarian.core import budgets, tiers, usage
 from agentic_librarian.core.user_context import as_user
 from agentic_librarian.db.get_or_create import get_or_create
 from agentic_librarian.db.migration_guard import check_migrations
@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI):
     mcp_server.set_db_manager(shared)
     two_phase.set_db_manager(shared)
     imports_worker.set_db_manager(shared)
+    budgets.set_db_manager(shared)
     yield
 
 
@@ -373,7 +374,7 @@ def update_history(
     enqueued = False
     if needs_completion:
         try:
-            enqueued = enqueue_edition_completion(work_id_str, fmt_str)
+            enqueued = enqueue_edition_completion(work_id_str, fmt_str, user_id=str(user.id))
         except Exception:  # noqa: BLE001 - enqueue is best-effort
             logger.exception("edition-completion enqueue failed for work %s", work_id_str)
     payload["enrichment_enqueued"] = enqueued
@@ -473,6 +474,16 @@ def new_conversation(user: AuthenticatedUser = Depends(get_current_user)):  # no
 
 @api_router.post("/chat")
 def chat(user: AuthenticatedUser = Depends(get_current_user), message: str = Body(..., embed=True)):  # noqa: B008
+    max_chars = tiers.chat_message_max_chars()
+    if len(message) > max_chars:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "message_too_long", "message": f"Message too long (max {max_chars} characters)."},
+        )
+    allowed, why = budgets.chat_turn_allowed(user.id)
+    if not allowed:
+        # Must reject BEFORE the StreamingResponse exists — SSE cannot carry an HTTP 429.
+        raise HTTPException(status_code=429, detail={"code": "chat_quota", "message": why})
     with as_user(user.id):
         ctx = transcript.get_or_create_active_conversation()
     adk_user_id = str(user.id)

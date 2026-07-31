@@ -64,6 +64,17 @@ def _parse_uuid(value) -> UUID | None:
         return None
 
 
+def _current_user_id_or_none() -> str | None:
+    """Best-effort attribution for the deep-enrichment enqueue (#100): chat tools run inside
+    the turn's as_user(...) scope (chat/stream.py sets it around the driver; make_async_tool's
+    asyncio.to_thread copies contextvars), so the user is normally present here — but the
+    enqueue itself is best-effort by design, so a missing ambient user must never crash it."""
+    try:
+        return str(get_required_user_id())
+    except Exception:  # noqa: BLE001 - defensive: no ambient user is a valid state for this call
+        return None
+
+
 def _normalize_status(value, allowed: tuple[str, ...]) -> str | None:
     """Case-insensitively match an agent-supplied status to a canonical member of
     `allowed`; None if it matches nothing (SEC-002: strict enum, no coercion)."""
@@ -733,7 +744,7 @@ def add_book_to_history(
     enqueued = False
     if created:
         try:
-            enqueued = enqueue_enrichment(str(work_id))
+            enqueued = enqueue_enrichment(str(work_id), user_id=_current_user_id_or_none())
         except Exception:  # noqa: BLE001 - deep pass is best-effort
             logger.exception("deep-enrichment enqueue failed for work %s", work_id)
 
@@ -977,7 +988,7 @@ def enrich_and_persist_work(title: str, author: str, format: str = "ebook") -> s
         work_id, created = resolved
         if created:
             try:
-                enqueue_enrichment(str(work_id))
+                enqueue_enrichment(str(work_id), user_id=_current_user_id_or_none())
             except Exception:  # noqa: BLE001 - deep pass is best-effort; fast data already persisted
                 logger.exception("deep-enrichment enqueue failed for work %s", work_id)
         return str(work_id)

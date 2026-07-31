@@ -308,6 +308,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)  # lowercased; the invite key
     firebase_uid: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #100 monetization: Ko-fi entitlement horizon (PR2 writes it; NULL/past = free tier).
+    subscriber_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

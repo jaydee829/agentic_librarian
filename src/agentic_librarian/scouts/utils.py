@@ -6,6 +6,8 @@ from functools import lru_cache
 from google import genai
 from google.genai import types
 
+from agentic_librarian.core.usage import record_llm_call
+
 # Current GA Gemini embedding model — the single source of truth for the model name (managers
 # and the #123 warm-before-session callers all reference this instead of copying the string).
 EMBED_MODEL = "gemini-embedding-001"
@@ -82,4 +84,8 @@ def get_cached_embedding(model_name: str, text: str) -> list[float]:
     )
     if not response or not response.embeddings:
         raise ValueError(f"Embedding generation returned no result for text: {text!r}")
+    # #100: embed responses expose no token counts and lru_cache means only MISSES reach
+    # here — record per network call with a documented chars//4 estimate (visibility, not
+    # billing-grade; embeddings are $0.15/M).
+    record_llm_call("gemini", model_name, len(text) // 4, 0)
     return response.embeddings[0].values

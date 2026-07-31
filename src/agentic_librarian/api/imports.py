@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
+from agentic_librarian.core import tiers
 from agentic_librarian.db.models import ImportJob, ImportRow
 from agentic_librarian.db.session import DatabaseManager
 from agentic_librarian.imports import bucketing, parsing
@@ -26,6 +27,13 @@ router = APIRouter()
 
 MAX_ROWS = 2000
 STALLED_AFTER = timedelta(minutes=15)
+# #100 review fix: bounds the in-flight-import lockout. An import-row task has no give-up
+# retry bound (unlike /internal/enrich's GIVE_UP_AFTER_RETRIES), and job recovery UI lives
+# only in React state — so a row wedged in 'processing' forever would otherwise block every
+# future commit for that user permanently. Invariant: a wedged job stops counting as
+# in-flight once it's older than this window; the daily enrichment budget still bounds the
+# cost of any rows from an overlapping "second" import that slips through afterward.
+IN_FLIGHT_WINDOW = timedelta(hours=24)
 
 db_manager = DatabaseManager()
 
@@ -139,6 +147,50 @@ async def commit(
 
     enqueue_ids: list[str] = []
     with db_manager.get_session() as session:
+        # Per-tier row cap (#100): the hard MAX_ROWS ceiling above is absolute (protects
+        # the parser/DB regardless of tier); this is the tighter, tier-aware limit.
+        tier = tiers.effective_tier(session, user.id)
+        limit = min(MAX_ROWS, tiers.import_max_rows(tier))
+        row_count = len(parsed)
+        if row_count > limit:
+            # Un-hardcode the upsell figure (env-tunable, #100 review fix) and only pitch
+            # it to a free-tier user — a supporter already at their ceiling shouldn't be
+            # told to "support" for a limit they already have.
+            supporter_limit = min(MAX_ROWS, tiers.import_max_rows("supporter"))
+            message = f"This import has {row_count} rows; your current limit is {limit}. Split the file"
+            message += (
+                f" — or support Shelfwright for the full {supporter_limit:,}-row limit." if tier == "free" else "."
+            )
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "import_rows_limit", "message": message},
+            )
+
+        # One in-flight import at a time (#100): a prior commit's rows still pending/processing
+        # on a RECENT job (#100 review fix, see IN_FLIGHT_WINDOW) blocks a new commit — avoids
+        # two jobs' Cloud Tasks racing on the same user's history. Two concurrent commits can
+        # both pass this check before either writes its job (query-then-insert race) — accepted:
+        # the worst case is two jobs' worth of duplicate rows, never corruption, and the daily
+        # enrichment budget still bounds the cost.
+        in_flight = (
+            session.query(ImportRow.id)
+            .join(ImportJob, ImportJob.id == ImportRow.import_job_id)
+            .filter(
+                ImportJob.user_id == user.id,
+                ImportRow.status.in_(("pending", "processing")),
+                ImportJob.created_at >= datetime.now(UTC) - IN_FLIGHT_WINDOW,
+            )
+            .first()
+        )
+        if in_flight is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "import_in_flight",
+                    "message": "Your previous import is still running — wait for it to finish before starting another.",
+                },
+            )
+
         job = ImportJob(user_id=user.id, source=source, original_filename=original_filename, total_rows=len(parsed))
         session.add(job)
         session.flush()  # populate job.id for the ImportRow FK

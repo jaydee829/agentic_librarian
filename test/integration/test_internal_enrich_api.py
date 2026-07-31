@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -5,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from agentic_librarian.api import internal as internal_mod
 from agentic_librarian.api import main as api_main
+from agentic_librarian.core.user_context import current_user_id, get_required_user_id
 from agentic_librarian.db.models import Author, Edition, Trope, Work, WorkContributor, WorkTrope
 from agentic_librarian.db.session import DatabaseManager
 from agentic_librarian.enrichment import two_phase
@@ -19,6 +21,10 @@ QUEUE_SA = "queue-invoker@p.iam.gserviceaccount.com"
 def client(db_url, monkeypatch):
     manager = DatabaseManager(db_url)
     monkeypatch.setattr(two_phase, "db_manager", manager)
+    # #100: point the budget gate at the isolated test DB too, so enrichment_allowed's
+    # global-governor query sees the empty test Usage table (allowed) rather than
+    # whatever DATABASE_URL a fail-open real connection would otherwise hit.
+    monkeypatch.setattr(internal_mod.budgets, "db_manager", manager)
     monkeypatch.setenv("ENRICH_INVOKER_SA", QUEUE_SA)
     monkeypatch.setenv("ENRICH_OIDC_AUDIENCE", VALID_AUD)
     yield TestClient(api_main.app)
@@ -63,6 +69,62 @@ def test_valid_queue_token_runs_deep_enrich(client, db_url, monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"work_id": str(work_id), "status": "enriched"}
     assert str(called["wid"]) == str(work_id)
+
+
+def test_valid_queue_token_with_user_id_runs_deep_enrich_attributed(client, db_url, monkeypatch):
+    """#100: the queue may pass ?user_id=<uuid> so the deep pass's LLM usage bills the
+    requesting user. as_user(...) wraps the call, so get_required_user_id() resolves inside
+    enrich_deep — this is the probe (patched at the handler's call site, per house pattern)."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    monkeypatch.setattr(
+        internal_mod, "_verify_oidc", lambda token, audience: {"email": QUEUE_SA, "email_verified": True}
+    )
+    seen = {}
+
+    def _fake_enrich_deep(wid):
+        seen["user_id"] = get_required_user_id()
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+    caller_id = uuid4()
+
+    resp = client.post(f"/internal/enrich/{work_id}?user_id={caller_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert seen["user_id"] == caller_id
+
+
+def test_valid_queue_token_without_user_id_runs_deep_enrich_unattributed(client, db_url, monkeypatch):
+    """Back-compat guarantee: pre-#100 (or requeue-sweep) tasks carry no user_id and must
+    still succeed, with no user identity in context (metering skips, nothing crashes)."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    monkeypatch.setattr(
+        internal_mod, "_verify_oidc", lambda token, audience: {"email": QUEUE_SA, "email_verified": True}
+    )
+    seen = {}
+
+    def _fake_enrich_deep(wid):
+        seen["raised"] = False
+        try:
+            get_required_user_id()
+        except RuntimeError:
+            seen["raised"] = True
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+
+    # Neutralize the autouse _default_user_context fixture's ambient DEFAULT_USER_ID for
+    # this request only. TestClient copies the current contextvars into the ASGI call, so
+    # without this the probe would see an ambient user and never observe the "no user in
+    # context" path a real requeue-sweep task (no ?user_id=) actually exercises in prod.
+    token = current_user_id.set(None)
+    try:
+        resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
+    finally:
+        current_user_id.reset(token)
+    assert resp.status_code == 200
+    assert seen["raised"] is True  # no user in context, exactly as before #100
 
 
 def test_missing_token_is_rejected(client):
@@ -202,3 +264,95 @@ def test_unconfigured_audience_is_forbidden(client, monkeypatch):
     )
     resp = client.post(f"/internal/enrich/{uuid4()}", headers={"Authorization": "Bearer x"})
     assert resp.status_code == 403
+
+
+def _as_queue(monkeypatch):
+    monkeypatch.setattr(
+        internal_mod, "_verify_oidc", lambda token, audience: {"email": QUEUE_SA, "email_verified": True}
+    )
+
+
+def test_over_budget_defers_with_new_scheduled_task_and_never_calls_enrich_deep(client, db_url, monkeypatch):
+    """#100: over budget -> 200 'deferred', a NEW task is enqueued with schedule_time strictly
+    after now (so the #97 give-up retry count never sees this attempt), and the paid deep pass
+    itself must NOT run."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global grounded-call governor reached")
+    )
+    ran_enrich_deep = {"called": False}
+    monkeypatch.setattr(
+        internal_mod.two_phase, "enrich_deep", lambda wid: ran_enrich_deep.__setitem__("called", True) or "done"
+    )
+    calls = []
+
+    def fake_enqueue(wid, user_id=None, schedule_time=None):
+        calls.append((wid, user_id, schedule_time))
+        return True
+
+    monkeypatch.setattr(internal_mod, "enqueue_enrichment", fake_enqueue)
+
+    caller_id = uuid4()
+    before = datetime.now(UTC)
+    resp = client.post(f"/internal/enrich/{work_id}?user_id={caller_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "deferred"
+    assert body["work_id"] == str(work_id)
+    assert ran_enrich_deep["called"] is False
+    assert len(calls) == 1
+    wid, uid, when = calls[0]
+    assert wid == str(work_id)
+    assert uid == str(caller_id)
+    assert when > before
+
+
+def test_under_budget_runs_the_normal_enrich_path_unchanged(client, db_url, monkeypatch):
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(internal_mod.budgets, "enrichment_allowed", lambda uid: (True, ""))
+    called = {}
+
+    def _fake_enrich_deep(wid):
+        called["wid"] = wid
+        return "done"
+
+    monkeypatch.setattr(internal_mod.two_phase, "enrich_deep", _fake_enrich_deep)
+    resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "enriched"}
+    assert str(called["wid"]) == str(work_id)
+
+
+def test_over_budget_and_enqueue_returns_false_is_deferred_enqueue_failed(client, db_url, monkeypatch):
+    """No retry storm: a failed re-enqueue must not raise/503 — the requeue sweep is the backstop."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(
+        internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "per-user grounded budget reached (tier free)")
+    )
+    monkeypatch.setattr(internal_mod, "enqueue_enrichment", lambda wid, user_id=None, schedule_time=None: False)
+    resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
+
+
+def test_over_budget_and_enqueue_raises_is_deferred_enqueue_failed(client, db_url, monkeypatch):
+    """The re-enqueue is best-effort — an exception (e.g. Cloud Tasks outage) must be caught,
+    not propagate as a 500."""
+    manager = DatabaseManager(db_url)
+    work_id = _seed_work(manager)
+    _as_queue(monkeypatch)
+    monkeypatch.setattr(internal_mod.budgets, "enrichment_allowed", lambda uid: (False, "global governor reached"))
+
+    def _boom(wid, user_id=None, schedule_time=None):
+        raise RuntimeError("cloud tasks unavailable")
+
+    monkeypatch.setattr(internal_mod, "enqueue_enrichment", _boom)
+    resp = client.post(f"/internal/enrich/{work_id}", headers={"Authorization": "Bearer good"})
+    assert resp.status_code == 200
+    assert resp.json() == {"work_id": str(work_id), "status": "deferred_enqueue_failed"}
