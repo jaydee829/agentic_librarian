@@ -126,8 +126,11 @@ def test_membership_updated_with_later_period_end_advances(client, db_url):
 
     with db.get_session() as session:
         refreshed = session.get(User, user_id)
+        payment = session.query(Payment).filter(Payment.provider_event_id == "advance-txn").first()
         expected = new_period_end + timedelta(days=5)
         assert expected - SLACK <= refreshed.subscriber_until <= expected + SLACK
+        assert payment is not None
+        assert expected - SLACK <= payment.granted_until <= expected + SLACK
 
 
 def test_membership_updated_with_earlier_period_end_unchanged_never_shrinks(client, db_url):
@@ -176,8 +179,11 @@ def test_membership_cancelled_cancel_at_period_end_is_capped(client, db_url):
 
     with db.get_session() as session:
         refreshed = session.get(User, user_id)
+        payment = session.query(Payment).filter(Payment.provider_event_id == "cancel-at-end-txn").first()
         expected = period_end + timedelta(days=5)
         assert expected - SLACK <= refreshed.subscriber_until <= expected + SLACK
+        assert payment is not None
+        assert expected - SLACK <= payment.granted_until <= expected + SLACK
 
 
 def test_membership_cancelled_immediate_via_canceled_at_is_capped_there(client, db_url):
@@ -201,8 +207,11 @@ def test_membership_cancelled_immediate_via_canceled_at_is_capped_there(client, 
 
     with db.get_session() as session:
         refreshed = session.get(User, user_id)
+        payment = session.query(Payment).filter(Payment.provider_event_id == "cancel-now-txn").first()
         expected = canceled_at + timedelta(days=5)
         assert expected - SLACK <= refreshed.subscriber_until <= expected + SLACK
+        assert payment is not None
+        assert expected - SLACK <= payment.granted_until <= expected + SLACK
 
 
 def test_duplicate_event_id_is_noop(client, db_url):
