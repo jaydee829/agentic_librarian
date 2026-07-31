@@ -3,9 +3,9 @@
 
 Tier semantics: 'byok' requires a user_credentials row for vendor 'gemini' — that table
 has NO writers until arc PR3 lands, so today the branch is inert but the enum is stable
-across the arc. 'supporter' = subscriber_until in the future (Ko-fi entitlements are
-PR2). Knobs are read per call (prod-tunable without redeploy); invalid or non-positive
-values fall back to the defaults below."""
+across the arc. 'supporter' = subscriber_until in the future (granted via the BMC
+subscriptions webhook, monetization arc 2/3). Knobs are read per call (prod-tunable
+without redeploy); invalid or non-positive values fall back to the defaults below."""
 
 from __future__ import annotations
 

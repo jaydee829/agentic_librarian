@@ -110,6 +110,13 @@ def test_apply_grant(current, new_horizon, expected):
         pytest.param(None, NOW, None, id="none-current-stays-none"),
         pytest.param(NOW + timedelta(days=1), NOW, NOW, id="later-current-capped"),
         pytest.param(NOW - timedelta(days=1), NOW, NOW - timedelta(days=1), id="earlier-current-never-extends"),
+        pytest.param(None, None, None, id="none-current-none-cap-stays-none"),
+        pytest.param(
+            NOW + timedelta(days=1),
+            None,
+            NOW + timedelta(days=1),
+            id="none-cap-never-guess-shrinks-standing",
+        ),
     ],
 )
 def test_apply_cap(current, cap, expected):

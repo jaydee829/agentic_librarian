@@ -213,7 +213,7 @@ def test_payments_match_recomputes_entitlement_from_stored_row(
 
     When payload has no current_period_end (empty dict), the grant falls back to
     entitlements.extend() at grant_days(kind) — same 33/370/0 day figures as the
-    flat Ko-fi grants this replaces.
+    flat legacy grants this replaces.
 
     When payload contains current_period_end (horizon path), the grant uses
     horizon(period_end) = period_end + grace_days (default 5), exercising the

@@ -74,8 +74,13 @@ def apply_grant(current: datetime | None, new_horizon: datetime) -> datetime:
     return new_horizon
 
 
-def apply_cap(current: datetime | None, cap: datetime) -> datetime | None:
-    """Cancel/pause events never EXTEND standing."""
+def apply_cap(current: datetime | None, cap: datetime | None) -> datetime | None:
+    """Cancel/pause events never EXTEND standing. cap=None means no horizon could be
+    derived from the payload (missing/absurd current_period_end and no canceled_at/
+    paused_at fallback) — a cap event with no derivable horizon must never guess-shrink
+    a member's standing, so `current` rides unchanged until natural lapse."""
+    if cap is None:
+        return current
     if current is None or current <= cap:
         return current
     return cap
