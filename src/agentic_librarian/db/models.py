@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
-    Boolean,
     Column,
     Date,
     DateTime,
@@ -18,6 +17,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -311,7 +311,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False)  # lowercased; the invite key
     firebase_uid: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     display_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    # #100 monetization: Ko-fi entitlement horizon (PR2 writes it; NULL/past = free tier).
+    # #100 monetization: BMC entitlement horizon (PR2 writes it; NULL/past = free tier).
     subscriber_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
@@ -340,23 +340,28 @@ class Usage(Base):
 
 
 class Payment(Base):
-    """One row per Ko-fi webhook event (monetization arc 2/3) — the audit trail behind
-    users.subscriber_until. Idempotency key = kofi_transaction_id (Ko-fi retries).
-    matched_user_id NULL = payer email didn't match a user (CLI `payments match` fixes)."""
+    """One row per BMC webhook delivery (monetization arc 2/3, BMC revector) — the
+    audit trail behind users.subscriber_until. Idempotency key = (provider,
+    provider_event_id) (BMC retries). granted_until = the horizon/cap this event
+    produced (null = tip/ignore/unmatched). matched_user_id NULL = payer email didn't
+    match a user (CLI `payments match` fixes)."""
 
     __tablename__ = "payments"
+    __table_args__ = (UniqueConstraint("provider", "provider_event_id", name="uq_payments_provider_event"),)
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4, nullable=False)
-    kofi_transaction_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    kofi_type: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, default="bmc", server_default="bmc", nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
     email: Mapped[str] = mapped_column(String, nullable=False, index=True)  # lowercased at ingest
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String, nullable=False)
-    tier_name: Mapped[str | None] = mapped_column(String, nullable=True)
-    is_subscription_payment: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    level_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    duration_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    subscription_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     matched_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    entitlement_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    granted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

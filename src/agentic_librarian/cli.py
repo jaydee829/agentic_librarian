@@ -36,23 +36,21 @@ def _parse_args(argv=None):
     invite_parser = user_sub.add_parser("invite", help="invite an email — creates the user row; they sign in later")
     invite_parser.add_argument("email", help="the invitee's email (the invite key; lowercased)")
     invite_parser.add_argument("--name", default=None, help="display name (optional)")
-    sub_parser = user_sub.add_parser(
-        "subscribe", help="grant/extend supporter entitlement (comp or Ko-fi mismatch fix)"
-    )
+    sub_parser = user_sub.add_parser("subscribe", help="grant/extend supporter entitlement (comp or BMC mismatch fix)")
     sub_parser.add_argument("email")
     group = sub_parser.add_mutually_exclusive_group()
     group.add_argument("--months", type=int, default=None, help="N x 33-day grants (default 1)")
     group.add_argument("--days", type=int, default=None)
     group.add_argument("--until", default=None, help="YYYY-MM-DD (absolute)")
 
-    payments_parser = subparsers.add_parser("payments", help="Ko-fi payment records (operator)")
+    payments_parser = subparsers.add_parser("payments", help="BMC payment records (operator)")
     payments_sub = payments_parser.add_subparsers(dest="payments_command")
     list_parser = payments_sub.add_parser("list", help="list payments")
     list_parser.add_argument("--unmatched", action="store_true")
     match_parser = payments_sub.add_parser(
         "match", help="link an unmatched payment to a user and apply its entitlement"
     )
-    match_parser.add_argument("kofi_transaction_id")
+    match_parser.add_argument("provider_event_id")
     match_parser.add_argument("email")
     return parser.parse_args(argv)
 
@@ -165,7 +163,7 @@ def _run_user_invite(args) -> int:
 
 
 def _run_user_subscribe(args) -> int:
-    """Operator comp / Ko-fi-mismatch fallback: grant or extend a user's supporter
+    """Operator comp / BMC-mismatch fallback: grant or extend a user's supporter
     entitlement directly. --months/--days extend (active subs stack, lapsed restart from
     now, via entitlements.extend); --until SETS subscriber_until absolutely (UTC
     midnight) — it does not stack."""
@@ -225,25 +223,27 @@ def _run_payments_list(args) -> int:
             query = query.filter(Payment.matched_user_id.is_(None))
         rows = query.all()
         header = (
-            f"{'kofi_transaction_id':<24} {'created_at':<10} {'email':<30} "
-            f"{'amount':>8} {'type/tier':<16} {'matched':<7} {'entitlement_days':>16}"
+            f"{'provider_event_id':<24} {'created_at':<10} {'email':<30} "
+            f"{'amount':>8} {'type/level':<16} {'duration':<8} {'matched':<7} {'granted_until':<13}"
         )
         print(header)
         for p in rows:
-            type_tier = p.tier_name or p.kofi_type
+            type_level = p.level_name or p.event_type
+            duration = p.duration_type or "-"
             matched = "yes" if p.matched_user_id else "no"
+            granted_until = p.granted_until.date().isoformat() if p.granted_until else "-"
             print(
-                f"{p.kofi_transaction_id:<24} {p.created_at.date().isoformat():<10} {p.email:<30} "
-                f"{p.amount:>8} {type_tier:<16} {matched:<7} {p.entitlement_days:>16}"
+                f"{p.provider_event_id:<24} {p.created_at.date().isoformat():<10} {p.email:<30} "
+                f"{p.amount:>8} {type_level:<16} {duration:<8} {matched:<7} {granted_until:<13}"
             )
     return 0
 
 
 def _run_payments_match(args) -> int:
-    """Recomputes classify()/grant_days() from the STORED row's fields (kofi_type,
-    is_subscription_payment, tier_name, amount) rather than trusting anything passed on
-    the command line, so the CLI and the webhook grant identically off a single source
-    of truth."""
+    """Recomputes classify()/horizon()/apply_grant() from the STORED row's fields
+    (event_type, duration_type, payload) rather than trusting anything passed on the
+    command line, so the CLI and the webhook grant identically off a single source of
+    truth."""
     from agentic_librarian.core import entitlements
     from agentic_librarian.db.models import Payment, User
 
@@ -253,29 +253,30 @@ def _run_payments_match(args) -> int:
         return 2
     db = _invite_db_manager()
     with db.get_session() as session:
-        payment = session.query(Payment).filter(Payment.kofi_transaction_id == args.kofi_transaction_id).first()
+        payment = session.query(Payment).filter(Payment.provider_event_id == args.provider_event_id).first()
         if payment is None:
-            print(f"error: no payment found for transaction {args.kofi_transaction_id!r}", file=sys.stderr)
+            print(f"error: no payment found for event {args.provider_event_id!r}", file=sys.stderr)
             return 2
         user = session.query(User).filter(User.email == email).first()
         if user is None:
             print(f"error: no user found for {email!r} (use `user invite` first)", file=sys.stderr)
             return 2
         if payment.matched_user_id is not None:
-            print(f"error: payment {args.kofi_transaction_id!r} is already matched", file=sys.stderr)
+            print(f"error: payment {args.provider_event_id!r} is already matched", file=sys.stderr)
             return 2
-        kind = entitlements.classify(
-            payment.kofi_type, payment.is_subscription_payment, payment.tier_name, payment.amount
-        )
-        days = entitlements.grant_days(kind)
+        kind = entitlements.classify(payment.event_type, payment.duration_type)
+        if kind in ("monthly", "annual"):
+            period_end = entitlements.ts_to_dt((payment.payload.get("data") or {}).get("current_period_end"))
+            new_until = entitlements.horizon(period_end) or entitlements.extend(
+                user.subscriber_until, entitlements.grant_days(kind)
+            )
+            user.subscriber_until = entitlements.apply_grant(user.subscriber_until, new_until)
+            payment.granted_until = user.subscriber_until
         payment.matched_user_id = user.id
-        payment.entitlement_days = days
-        if days > 0:
-            user.subscriber_until = entitlements.extend(user.subscriber_until, days)
         session.flush()
         result = user.subscriber_until
-    until_msg = result.isoformat() if result else "unchanged"
-    print(f"Matched {args.kofi_transaction_id} to {email} ({kind}, +{days}d) -> subscriber_until {until_msg}")
+    until_msg = result.isoformat() if kind in ("monthly", "annual") else "unchanged"
+    print(f"Matched {args.provider_event_id} to {email} ({kind}) -> subscriber_until {until_msg}")
     return 0
 
 

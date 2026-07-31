@@ -67,20 +67,19 @@ def kofi_webhook(data: str = Form(...)):  # noqa: B008
     days = entitlements.grant_days(kind)
 
     with db_manager.get_session() as session:
-        if session.query(Payment.id).filter(Payment.kofi_transaction_id == txn_id).first() is not None:
+        if session.query(Payment.id).filter(Payment.provider_event_id == txn_id).first() is not None:
             return {"status": "duplicate"}
         user = session.query(User).filter(User.email == email).first() if email else None
         payment = Payment(
-            kofi_transaction_id=txn_id,
-            kofi_type=kofi_type,
+            provider_event_id=txn_id,
+            event_type=kofi_type,
             email=email,
             amount=amount,
             currency=str(event.get("currency") or ""),
-            tier_name=tier_name,
-            is_subscription_payment=is_sub,
+            level_name=tier_name,
             payload=event,
             matched_user_id=user.id if user else None,
-            entitlement_days=days if user else 0,
+            granted_until=None,
         )
         session.add(payment)
         if user is not None and days > 0:

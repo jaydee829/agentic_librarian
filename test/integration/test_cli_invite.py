@@ -1,6 +1,6 @@
-"""Operator account tooling (Lift 1, ADR-048; monetization arc 2/3 task 3): adding a
-friend, comping/correcting a supporter entitlement, and reconciling a Ko-fi payment
-that couldn't be auto-matched to a user are all commands, not psql."""
+"""Operator account tooling (Lift 1, ADR-048; monetization arc 2/3, BMC revector task 2):
+adding a friend, comping/correcting a supporter entitlement, and reconciling a BMC
+payment that couldn't be auto-matched to a user are all commands, not psql."""
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -42,16 +42,18 @@ def _seed_user(db, email, subscriber_until=None, created_at=None):
 
 def _seed_payment(db, **overrides):
     fields = {
-        "kofi_transaction_id": "txn-1",
-        "kofi_type": "Subscription",
+        "provider": "bmc",
+        "provider_event_id": "txn-1",
+        "event_type": "membership.started",
         "email": "payer@example.com",
         "amount": Decimal("5.00"),
         "currency": "USD",
-        "tier_name": None,
-        "is_subscription_payment": True,
+        "level_name": None,
+        "duration_type": None,
+        "subscription_id": None,
         "payload": {},
         "matched_user_id": None,
-        "entitlement_days": 0,
+        "granted_until": None,
         "created_at": datetime.now(UTC) - timedelta(days=1),
         **overrides,
     }
@@ -149,12 +151,12 @@ def test_payments_list_unmatched_filters_out_matched_rows(_cli_db, capsys):
     user_id = _seed_user(_cli_db, "matched@example.com")
     _seed_payment(
         _cli_db,
-        kofi_transaction_id="txn-matched",
+        provider_event_id="txn-matched",
         email="matched@example.com",
         matched_user_id=user_id,
-        entitlement_days=33,
+        granted_until=datetime.now(UTC) + timedelta(days=33),
     )
-    _seed_payment(_cli_db, kofi_transaction_id="txn-unmatched", email="nobody@example.com")
+    _seed_payment(_cli_db, provider_event_id="txn-unmatched", email="nobody@example.com")
     assert main(["payments", "list", "--unmatched"]) == 0
     out = capsys.readouterr().out
     assert "txn-unmatched" in out
@@ -165,12 +167,12 @@ def test_payments_list_without_filter_shows_matched_and_unmatched(_cli_db, capsy
     user_id = _seed_user(_cli_db, "matched2@example.com")
     _seed_payment(
         _cli_db,
-        kofi_transaction_id="txn-m2",
+        provider_event_id="txn-m2",
         email="matched2@example.com",
         matched_user_id=user_id,
-        entitlement_days=33,
+        granted_until=datetime.now(UTC) + timedelta(days=33),
     )
-    _seed_payment(_cli_db, kofi_transaction_id="txn-u2", email="nobody2@example.com")
+    _seed_payment(_cli_db, provider_event_id="txn-u2", email="nobody2@example.com")
     assert main(["payments", "list"]) == 0
     out = capsys.readouterr().out
     assert "txn-m2" in out
@@ -179,43 +181,46 @@ def test_payments_list_without_filter_shows_matched_and_unmatched(_cli_db, capsy
 
 
 @pytest.mark.parametrize(
-    "kofi_type,is_sub,tier_name,amount,expected_kind,expected_days",
+    "event_type,duration_type,expected_kind,expected_days",
     [
-        pytest.param("Subscription", True, None, Decimal("5.00"), "monthly", 33, id="monthly"),
-        pytest.param("Shop Order", False, "Annual", Decimal("25.00"), "annual", 370, id="annual"),
-        pytest.param("Donation", False, None, Decimal("3.00"), "tip", 0, id="tip-no-entitlement"),
+        pytest.param("membership.started", "month", "monthly", 33, id="monthly"),
+        pytest.param("membership.started", "year", "annual", 370, id="annual"),
+        pytest.param("donation.created", None, "tip", 0, id="tip-no-entitlement"),
     ],
 )
 def test_payments_match_recomputes_entitlement_from_stored_row(
-    _cli_db, capsys, kofi_type, is_sub, tier_name, amount, expected_kind, expected_days
+    _cli_db, capsys, event_type, duration_type, expected_kind, expected_days
 ):
-    """match must recompute classify()/grant_days() from the STORED payment fields
-    (not anything on the command line) so CLI and webhook grant identically."""
+    """match must recompute classify()/horizon()/apply_grant() from the STORED payment
+    fields (event_type, duration_type, payload) — not anything on the command line — so
+    CLI and webhook grant identically. The seeded payload has no current_period_end, so
+    the grant falls back to entitlements.extend() at grant_days(kind) — same 33/370/0
+    day figures as the flat Ko-fi grants this replaces."""
     email = f"match-{expected_kind}@example.com"
-    txn_id = f"txn-{expected_kind}"
+    event_id = f"txn-{expected_kind}"
     user_id = _seed_user(_cli_db, email)
     _seed_payment(
         _cli_db,
-        kofi_transaction_id=txn_id,
-        kofi_type=kofi_type,
+        provider_event_id=event_id,
+        event_type=event_type,
         email=email,
-        amount=amount,
-        tier_name=tier_name,
-        is_subscription_payment=is_sub,
+        amount=Decimal("5.00"),
+        duration_type=duration_type,
     )
     before = datetime.now(UTC)
-    assert main(["payments", "match", txn_id, email]) == 0
+    assert main(["payments", "match", event_id, email]) == 0
     with _cli_db.get_session() as session:
-        payment = session.query(Payment).filter(Payment.kofi_transaction_id == txn_id).one()
+        payment = session.query(Payment).filter(Payment.provider_event_id == event_id).one()
         refreshed = session.get(User, user_id)
         assert payment.matched_user_id == user_id
-        assert payment.entitlement_days == expected_days
         if expected_days > 0:
             expected_min = before + timedelta(days=expected_days) - SLACK
             expected_max = before + timedelta(days=expected_days) + SLACK
             assert expected_min <= refreshed.subscriber_until <= expected_max
+            assert expected_min <= payment.granted_until <= expected_max
         else:
             assert refreshed.subscriber_until is None
+            assert payment.granted_until is None
 
 
 def test_payments_match_refuses_unknown_transaction(_cli_db, capsys):
@@ -225,7 +230,7 @@ def test_payments_match_refuses_unknown_transaction(_cli_db, capsys):
 
 
 def test_payments_match_refuses_unknown_email(_cli_db, capsys):
-    _seed_payment(_cli_db, kofi_transaction_id="txn-orphan", email="payer@example.com")
+    _seed_payment(_cli_db, provider_event_id="txn-orphan", email="payer@example.com")
     assert main(["payments", "match", "txn-orphan", "nobody@example.com"]) == 2
     assert "error" in capsys.readouterr().err
 
@@ -234,10 +239,10 @@ def test_payments_match_refuses_already_matched(_cli_db, capsys):
     user_id = _seed_user(_cli_db, "already@example.com")
     _seed_payment(
         _cli_db,
-        kofi_transaction_id="txn-already",
+        provider_event_id="txn-already",
         email="already@example.com",
         matched_user_id=user_id,
-        entitlement_days=33,
+        granted_until=datetime.now(UTC) + timedelta(days=33),
     )
     assert main(["payments", "match", "txn-already", "already@example.com"]) == 2
     assert "already matched" in capsys.readouterr().err
