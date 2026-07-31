@@ -16,17 +16,17 @@ from sqlalchemy.orm import joinedload, selectinload
 from agentic_librarian.agents.runtime import LibrarianConversation, astart_conversation
 from agentic_librarian.api import analysis, auth, recommendations
 from agentic_librarian.api import availability as availability_api
+from agentic_librarian.api import bmc as bmc_api
 from agentic_librarian.api import imports as imports_api
-from agentic_librarian.api import kofi as kofi_api
 from agentic_librarian.api import libraries as libraries_api
 from agentic_librarian.api.analysis import router as analysis_router
 from agentic_librarian.api.auth import AuthenticatedUser, get_current_user
 from agentic_librarian.api.availability import router as availability_router
+from agentic_librarian.api.bmc import router as bmc_router
 from agentic_librarian.api.books import router as books_router
 from agentic_librarian.api.firebase_auth_proxy import router as firebase_auth_proxy_router
 from agentic_librarian.api.imports import router as imports_router
 from agentic_librarian.api.internal import router as internal_router
-from agentic_librarian.api.kofi import router as kofi_router
 from agentic_librarian.api.libraries import router as libraries_router
 from agentic_librarian.api.recommendations import router as recommendations_router
 from agentic_librarian.chat import stream, transcript
@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
     two_phase.set_db_manager(shared)
     imports_worker.set_db_manager(shared)
     budgets.set_db_manager(shared)
-    kofi_api.set_db_manager(shared)
+    bmc_api.set_db_manager(shared)
     yield
 
 
@@ -126,7 +126,7 @@ api_router.include_router(libraries_router)
 # break fixed contracts (Firebase /__/auth/*) or Cloud Tasks target URLs (/internal/*).
 app.include_router(firebase_auth_proxy_router)
 app.include_router(internal_router)
-app.include_router(kofi_router)
+app.include_router(bmc_router)
 
 
 @app.get("/health")
