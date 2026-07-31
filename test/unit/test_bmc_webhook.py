@@ -273,7 +273,9 @@ def test_membership_started_canceled_status_is_recorded_not_granted(monkeypatch)
 
 def test_membership_cancelled_cancel_at_period_end_true_is_capped(monkeypatch):
     monkeypatch.setenv("BMC_WEBHOOK_SECRET", SECRET)
-    user = _FakeUser(id="u-cancel", email="cancel@example.com", subscriber_until=datetime.now(UTC) + timedelta(days=100))
+    user = _FakeUser(
+        id="u-cancel", email="cancel@example.com", subscriber_until=datetime.now(UTC) + timedelta(days=100)
+    )
     bmc.set_db_manager(_WorkingSessionManager(_FakeSession(user=user)))
     resp = _post(
         {
@@ -293,7 +295,9 @@ def test_membership_cancelled_cancel_at_period_end_true_is_capped(monkeypatch):
 
 def test_membership_paused_is_capped(monkeypatch):
     monkeypatch.setenv("BMC_WEBHOOK_SECRET", SECRET)
-    user = _FakeUser(id="u-paused", email="paused@example.com", subscriber_until=datetime.now(UTC) + timedelta(days=100))
+    user = _FakeUser(
+        id="u-paused", email="paused@example.com", subscriber_until=datetime.now(UTC) + timedelta(days=100)
+    )
     bmc.set_db_manager(_WorkingSessionManager(_FakeSession(user=user)))
     resp = _post(
         {
