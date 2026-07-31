@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { getAccount, type Account } from '../api/client'
 
-const KOFI_URL = 'https://ko-fi.com/shelfwright'
+const BMC_URL = 'https://buymeacoffee.com/shelfwrighw'
 
 /** Account dropdown off the top-bar avatar. Future home of username change and the
  *  BYOK entry (arc PR 3). Sign-out must never depend on the API: account fetch failure
@@ -60,11 +60,11 @@ export default function AccountMenu() {
           </div>
           <div className="account-menu-support">
             <div className="account-menu-heading">Support Shelfwright ♥</div>
-            <a href={KOFI_URL} target="_blank" rel="noopener noreferrer" role="menuitem">$3 / month</a>
-            <a href={KOFI_URL} target="_blank" rel="noopener noreferrer" role="menuitem">$25 / year</a>
-            <a href={KOFI_URL} target="_blank" rel="noopener noreferrer" role="menuitem">Leave a tip</a>
+            <a href={BMC_URL} target="_blank" rel="noopener noreferrer" role="menuitem">$3 / month</a>
+            <a href={BMC_URL} target="_blank" rel="noopener noreferrer" role="menuitem">$30 / year</a>
+            <a href={BMC_URL} target="_blank" rel="noopener noreferrer" role="menuitem">Leave a tip</a>
             <div className="account-menu-nudge">
-              Use your Shelfwright sign-in email on Ko-fi so your support links up automatically.
+              Use your Shelfwright sign-in email on Buy Me a Coffee so your support links up automatically.
             </div>
           </div>
           <hr />

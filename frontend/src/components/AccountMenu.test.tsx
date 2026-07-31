@@ -72,7 +72,7 @@ describe('AccountMenu', () => {
     expect(screen.queryByText(/Supporter until/)).not.toBeInTheDocument()
   })
 
-  it('renders three Ko-fi support links, all pointing at ko-fi.com/shelfwright and opening in a new tab safely', async () => {
+  it('renders three Buy Me a Coffee support links, all pointing at buymeacoffee.com/shelfwrighw and opening in a new tab safely', async () => {
     vi.mocked(getAccount).mockResolvedValueOnce({
       email: 'a@b.com', display_name: 'Ada', tier: 'free', subscriber_until: null,
     })
@@ -81,11 +81,14 @@ describe('AccountMenu', () => {
     const links = menuItems.filter((el) => el.tagName === 'A')
     expect(links).toHaveLength(3)
     for (const link of links) {
-      expect(link).toHaveAttribute('href', 'https://ko-fi.com/shelfwright')
+      expect(link).toHaveAttribute('href', 'https://buymeacoffee.com/shelfwrighw')
       expect(link).toHaveAttribute('target', '_blank')
       expect(link.getAttribute('rel')).toContain('noopener')
     }
-    expect(screen.getByText(/sign-in email on Ko-fi/i)).toBeInTheDocument()
+    expect(screen.getByText('$3 / month')).toBeInTheDocument()
+    expect(screen.getByText('$30 / year')).toBeInTheDocument()
+    expect(screen.getByText('Leave a tip')).toBeInTheDocument()
+    expect(screen.getByText(/sign-in email on Buy Me a Coffee/i)).toBeInTheDocument()
   })
 
   it('closes the panel on Escape', async () => {
